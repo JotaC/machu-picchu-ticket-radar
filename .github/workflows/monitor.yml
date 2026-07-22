@@ -1,19 +1,16 @@
 name: Monitor Machu Picchu
 
 on:
-  # Permite ejecutar una prueba manual.
   workflow_dispatch:
 
-  # Ejecuta el monitor cada cinco minutos.
-  # Posteriormente el código distinguirá entre
-  # alertas configuradas cada 5 o cada 10 minutos.
+  # GitHub ejecuta el flujo aproximadamente cada cinco minutos.
+  # monitor.js aplica internamente la frecuencia de cada alerta (5 o 10 minutos).
   schedule:
     - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
 
 permissions:
   contents: write
 
-# Evita dos ejecuciones simultáneas.
 concurrency:
   group: monitor-machu-picchu
   cancel-in-progress: false
@@ -21,24 +18,18 @@ concurrency:
 jobs:
   revisar-disponibilidad:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     env:
-      # Conexión con Telegram.
       BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
       CHAT_ID: ${{ secrets.CHAT_ID }}
-
-      # Conexión con la API de Apps Script.
       ALERTS_API_URL: ${{ secrets.ALERTS_API_URL }}
       MONITOR_API_KEY: ${{ secrets.MONITOR_API_KEY }}
-
-      # En la ejecución manual se enviará un resumen,
-      # incluso cuando no se encuentren entradas.
       NOTIFY_STATUS: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
 
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           ref: main
 
@@ -81,7 +72,7 @@ jobs:
 
       - name: Guardar diagnóstico
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v5
         with:
           name: diagnostico-${{ github.run_number }}
           path: diagnostico/
