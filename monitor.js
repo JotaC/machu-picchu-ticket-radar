@@ -3,29 +3,20 @@ import fs from 'node:fs';
 
 const CONFIG = Object.freeze({
   siteUrl: 'https://tuboleto.cultura.pe/llaqta_machupicchu',
-
-  requiredTickets: Number.parseInt(
-    process.env.REQUIRED_TICKETS || '4',
-    10
-  ),
-
+  alertsApiUrl: String(process.env.ALERTS_API_URL || '').trim(),
+  monitorApiKey: String(process.env.MONITOR_API_KEY || '').trim(),
+  botToken: String(process.env.BOT_TOKEN || '').trim(),
+  fallbackChatId: String(process.env.CHAT_ID || '').trim(),
   notifyStatus:
-    String(
-      process.env.NOTIFY_STATUS || 'false'
-    ).toLowerCase() === 'true',
-
+    String(process.env.NOTIFY_STATUS || 'false').toLowerCase() === 'true',
   timeZone: 'America/Lima',
   stateFile: 'state.json',
   diagnosticDirectory: 'diagnostico',
   pageTimeoutMs: 60_000,
-  actionTimeoutMs: 30_000
+  actionTimeoutMs: 30_000,
+  dueToleranceMs: 60_000,
+  systemErrorCooldownMs: 6 * 60 * 60 * 1000
 });
-
-
-/* ============================================================
- * RUTAS
- * ============================================================
- */
 
 const ROUTES = Object.freeze([
   {
@@ -90,56 +81,42 @@ const ROUTES = Object.freeze([
   }
 ]);
 
-
-/* ============================================================
- * MESES
- * ============================================================
- */
+const ROUTE_BY_CODE = new Map(
+  ROUTES.map(route => [route.code, route])
+);
 
 const MONTHS = Object.freeze({
   ENE: 0,
   ENERO: 0,
   JAN: 0,
-
   FEB: 1,
   FEBRERO: 1,
-
   MAR: 2,
   MARZO: 2,
-
   ABR: 3,
   ABRIL: 3,
   APR: 3,
-
   MAY: 4,
   MAYO: 4,
-
   JUN: 5,
   JUNIO: 5,
-
   JUL: 6,
   JULIO: 6,
-
   AGO: 7,
   AGOSTO: 7,
   AUG: 7,
-
   SET: 8,
   SEP: 8,
   SEPT: 8,
   SEPTIEMBRE: 8,
-
   OCT: 9,
   OCTUBRE: 9,
-
   NOV: 10,
   NOVIEMBRE: 10,
-
   DIC: 11,
   DICIEMBRE: 11,
   DEC: 11
 });
-
 
 const SPANISH_MONTHS = Object.freeze([
   'enero',
@@ -156,188 +133,67 @@ const SPANISH_MONTHS = Object.freeze([
   'diciembre'
 ]);
 
-
-/* ============================================================
- * FECHAS Y TEXTO
- * ============================================================
- */
-
 function normalizeText(value) {
   return String(value || '')
     .normalize('NFD')
-    .replace(
-      /[\u0300-\u036f]/g,
-      ''
-    )
-    .replace(
-      /\s+/g,
-      ' '
-    )
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
+function parseISODate(isoDate) {
+  const match = String(isoDate || '').match(
+    /^(\d{4})-(\d{2})-(\d{2})$/
+  );
 
-function getDatePartsInLima(
-  date = new Date()
-) {
-  const values = {};
-
-  const parts =
-    new Intl.DateTimeFormat(
-      'en-CA',
-      {
-        timeZone:
-          CONFIG.timeZone,
-
-        year:
-          'numeric',
-
-        month:
-          '2-digit',
-
-        day:
-          '2-digit'
-      }
-    ).formatToParts(date);
-
-  for (
-    const part of parts
-  ) {
-    if (
-      [
-        'year',
-        'month',
-        'day'
-      ].includes(part.type)
-    ) {
-      values[part.type] =
-        Number(part.value);
-    }
+  if (!match) {
+    return new Date(Number.NaN);
   }
 
-  return {
-    year:
-      values.year,
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
 
-    month:
-      values.month,
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return new Date(Number.NaN);
+  }
 
-    day:
-      values.day
-  };
+  return date;
 }
 
-
-/**
- * Calcula automáticamente mañana
- * usando la fecha de Lima, Perú.
- */
-function getTomorrowInLima() {
-  const today =
-    getDatePartsInLima();
-
-  const date =
-    new Date(
-      Date.UTC(
-        today.year,
-        today.month - 1,
-        today.day + 1
-      )
-    );
-
-  const year =
-    date.getUTCFullYear();
-
-  const month =
-    date.getUTCMonth() + 1;
-
-  const day =
-    date.getUTCDate();
-
-  return {
-    iso:
-      String(year).padStart(4, '0') +
-      '-' +
-      String(month).padStart(2, '0') +
-      '-' +
-      String(day).padStart(2, '0'),
-
-    date
-  };
+function formatDatePE(isoDate) {
+  const [year, month, day] = String(isoDate).split('-');
+  return `${day}/${month}/${year}`;
 }
-
-
-function formatDatePE(
-  isoDate
-) {
-  const [
-    year,
-    month,
-    day
-  ] = isoDate.split('-');
-
-  return (
-    day +
-    '/' +
-    month +
-    '/' +
-    year
-  );
-}
-
 
 function getLimaTimestamp() {
-  return new Intl.DateTimeFormat(
-    'es-PE',
-    {
-      timeZone:
-        CONFIG.timeZone,
-
-      dateStyle:
-        'short',
-
-      timeStyle:
-        'medium'
-    }
-  ).format(
-    new Date()
-  );
+  return new Intl.DateTimeFormat('es-PE', {
+    timeZone: CONFIG.timeZone,
+    dateStyle: 'short',
+    timeStyle: 'medium'
+  }).format(new Date());
 }
 
+function parseCalendarMonth(label) {
+  const clean = normalizeText(label)
+    .toUpperCase()
+    .replace(/\./g, '');
 
-function parseCalendarMonth(
-  label
-) {
-  const clean =
-    normalizeText(label)
-      .toUpperCase()
-      .replace(
-        /\./g,
-        ''
-      );
+  const parts = clean.split(' ');
 
-  const parts =
-    clean.split(' ');
-
-  if (
-    parts.length < 2
-  ) {
+  if (parts.length < 2) {
     return null;
   }
 
-  const month =
-    MONTHS[parts[0]];
+  const month = MONTHS[parts[0]];
+  const year = Number.parseInt(parts.at(-1), 10);
 
-  const year =
-    Number.parseInt(
-      parts.at(-1),
-      10
-    );
-
-  if (
-    month === undefined ||
-    !Number.isInteger(year)
-  ) {
+  if (month === undefined || !Number.isInteger(year)) {
     return null;
   }
 
@@ -347,388 +203,416 @@ function parseCalendarMonth(
   };
 }
 
+function validateEnvironment() {
+  const missing = [];
 
-/* ============================================================
- * VALIDACIÓN
- * ============================================================
- */
+  if (!CONFIG.alertsApiUrl) {
+    missing.push('ALERTS_API_URL');
+  }
 
-function validateConfiguration() {
-  if (
-    !Number.isInteger(
-      CONFIG.requiredTickets
-    ) ||
-    CONFIG.requiredTickets < 1
-  ) {
+  if (!CONFIG.monitorApiKey) {
+    missing.push('MONITOR_API_KEY');
+  }
+
+  if (!CONFIG.botToken) {
+    missing.push('BOT_TOKEN');
+  }
+
+  if (missing.length) {
     throw new Error(
-      'REQUIRED_TICKETS debe ser un número entero mayor que cero.'
+      `Faltan secretos o variables: ${missing.join(', ')}.`
     );
   }
 }
 
-
-/* ============================================================
- * DIAGNÓSTICO
- * ============================================================
- */
-
 function ensureDiagnosticDirectory() {
-  fs.mkdirSync(
-    CONFIG.diagnosticDirectory,
-    {
-      recursive: true
-    }
-  );
+  fs.mkdirSync(CONFIG.diagnosticDirectory, {
+    recursive: true
+  });
 }
 
-
-function sanitizeFileName(
-  value
-) {
+function sanitizeFileName(value) {
   return normalizeText(value)
     .toLowerCase()
-    .replace(
-      /[^a-z0-9]+/g,
-      '-'
-    )
-    .replace(
-      /^-+|-+$/g,
-      ''
-    );
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
-
-async function saveDiagnostic(
-  page,
-  name
-) {
+async function saveDiagnostic(page, name) {
   ensureDiagnosticDirectory();
 
-  const safeName =
-    sanitizeFileName(name);
+  const safeName = sanitizeFileName(name);
 
-  await page
-    .screenshot({
-      path:
-        CONFIG.diagnosticDirectory +
-        '/' +
-        safeName +
-        '.png',
-
-      fullPage:
-        true
-    })
-    .catch(
-      error => {
-        console.warn(
-          'No se pudo guardar ' +
-          safeName +
-          '.png:',
-          error.message
-        );
-      }
+  await page.screenshot({
+    path: `${CONFIG.diagnosticDirectory}/${safeName}.png`,
+    fullPage: true
+  }).catch(error => {
+    console.warn(
+      `No se pudo guardar ${safeName}.png:`,
+      error.message
     );
+  });
 
-  const html =
-    await page
-      .content()
-      .catch(
-        () => ''
-      );
+  const html = await page.content().catch(() => '');
 
-  if (
-    html
-  ) {
+  if (html) {
     fs.writeFileSync(
-      CONFIG.diagnosticDirectory +
-      '/' +
-      safeName +
-      '.html',
-
+      `${CONFIG.diagnosticDirectory}/${safeName}.html`,
       html,
       'utf8'
     );
   }
 }
 
-
-/* ============================================================
- * ESTADO DEL MONITOR
- * ============================================================
- */
+function defaultState() {
+  return {
+    version: 2,
+    alerts: {},
+    system: {
+      lastApiErrorNotifiedAt: null
+    }
+  };
+}
 
 function loadState() {
   try {
-    if (
-      !fs.existsSync(
-        CONFIG.stateFile
-      )
-    ) {
-      return {
-        targetDate: '',
-        availableKeys: [],
-        allRoutesFailed: false
-      };
+    if (!fs.existsSync(CONFIG.stateFile)) {
+      return defaultState();
     }
 
-    const state =
-      JSON.parse(
-        fs.readFileSync(
-          CONFIG.stateFile,
-          'utf8'
-        )
-      );
+    const parsed = JSON.parse(
+      fs.readFileSync(CONFIG.stateFile, 'utf8')
+    );
 
     return {
-      targetDate:
-        String(
-          state.targetDate || ''
-        ),
-
-      availableKeys:
-        Array.isArray(
-          state.availableKeys
-        )
-          ? state.availableKeys.map(
-            String
-          )
-          : [],
-
-      allRoutesFailed:
-        state.allRoutesFailed ===
-        true
+      version: 2,
+      alerts:
+        parsed &&
+        typeof parsed.alerts === 'object' &&
+        parsed.alerts
+          ? parsed.alerts
+          : {},
+      system:
+        parsed &&
+        typeof parsed.system === 'object' &&
+        parsed.system
+          ? parsed.system
+          : {
+              lastApiErrorNotifiedAt: null
+            }
     };
-
   } catch (error) {
     console.warn(
       'No se pudo leer state.json:',
       error.message
     );
 
-    return {
-      targetDate: '',
-      availableKeys: [],
-      allRoutesFailed: false
-    };
+    return defaultState();
   }
 }
 
-
-function saveState(
-  targetDate,
-  availableKeys,
-  allRoutesFailed
-) {
-  const state = {
-    targetDate,
-
-    availableKeys:
-      [
-        ...new Set(
-          availableKeys
-        )
-      ].sort(),
-
-    allRoutesFailed:
-      allRoutesFailed === true
-  };
-
+function saveState(state) {
   fs.writeFileSync(
     CONFIG.stateFile,
-
-    JSON.stringify(
-      state,
-      null,
-      2
-    ) + '\n',
-
+    JSON.stringify(state, null, 2) + '\n',
     'utf8'
   );
 }
 
-
-/* ============================================================
- * TELEGRAM
- * ============================================================
- */
-
-function splitTelegramMessage(
-  text,
-  maxLength = 3900
-) {
+function splitTelegramMessage(text, maxLength = 3900) {
   const chunks = [];
+  let remaining = String(text || '');
 
-  let remaining =
-    String(text || '');
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf(
+      '\n',
+      maxLength
+    );
 
-  while (
-    remaining.length >
-    maxLength
-  ) {
-    let splitAt =
-      remaining.lastIndexOf(
-        '\n',
-        maxLength
-      );
-
-    if (
-      splitAt <
-      Math.floor(
-        maxLength * 0.6
-      )
-    ) {
-      splitAt =
-        maxLength;
+    if (splitAt < Math.floor(maxLength * 0.6)) {
+      splitAt = maxLength;
     }
 
     chunks.push(
-      remaining
-        .slice(
-          0,
-          splitAt
-        )
-        .trim()
+      remaining.slice(0, splitAt).trim()
     );
 
-    remaining =
-      remaining
-        .slice(
-          splitAt
-        )
-        .trim();
+    remaining = remaining
+      .slice(splitAt)
+      .trim();
   }
 
-  if (
-    remaining
-  ) {
-    chunks.push(
-      remaining
-    );
+  if (remaining) {
+    chunks.push(remaining);
   }
 
   return chunks;
 }
 
+async function sendTelegram(chatId, text) {
+  const destination = String(
+    chatId ||
+    CONFIG.fallbackChatId ||
+    ''
+  ).trim();
 
-async function sendTelegram(
-  text
-) {
-  const token =
-    process.env.BOT_TOKEN;
-
-  const chatId =
-    process.env.CHAT_ID;
-
-  if (
-    !token ||
-    !chatId
-  ) {
+  if (!destination) {
     throw new Error(
-      'No se encontraron BOT_TOKEN o CHAT_ID.'
+      'No existe un CHAT_ID para enviar el mensaje.'
     );
   }
 
-  const chunks =
-    splitTelegramMessage(
-      text
+  for (const chunk of splitTelegramMessage(text)) {
+    const response = await fetch(
+      `https://api.telegram.org/bot${CONFIG.botToken}/sendMessage`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          chat_id: destination,
+          text: chunk,
+          disable_web_page_preview: false
+        })
+      }
     );
 
-  for (
-    const chunk of chunks
-  ) {
-    const response =
-      await fetch(
-        'https://api.telegram.org/bot' +
-        token +
-        '/sendMessage',
+    const responseText = await response.text();
 
-        {
-          method:
-            'POST',
-
-          headers: {
-            'Content-Type':
-              'application/json'
-          },
-
-          body:
-            JSON.stringify({
-              chat_id:
-                chatId,
-
-              text:
-                chunk,
-
-              disable_web_page_preview:
-                false
-            })
-        }
-      );
-
-    const responseText =
-      await response.text();
-
-    if (
-      !response.ok
-    ) {
+    if (!response.ok) {
       throw new Error(
-        'Telegram respondió HTTP ' +
-        response.status +
-        ': ' +
-        responseText
+        `Telegram respondió HTTP ${response.status}: ${responseText}`
       );
     }
 
-    const result =
-      JSON.parse(
-        responseText
-      );
+    const result = JSON.parse(responseText);
 
-    if (
-      !result.ok
-    ) {
+    if (!result.ok) {
       throw new Error(
-        'Telegram rechazó el mensaje: ' +
-        responseText
+        `Telegram rechazó el mensaje: ${responseText}`
       );
     }
   }
 }
 
+function composeApiUrl() {
+  const url = new URL(CONFIG.alertsApiUrl);
 
-/* ============================================================
- * PETICIONES QUE PODEMOS IGNORAR
- * ============================================================
- */
+  url.searchParams.set(
+    'key',
+    CONFIG.monitorApiKey
+  );
 
-function isIgnoredRequest(
-  url
-) {
-  return (
-    url.includes(
-      'google-analytics.com'
-    ) ||
-    url.includes(
-      'googletagmanager.com'
-    ) ||
-    url.includes(
-      'doubleclick.net'
-    ) ||
-    url.includes(
-      'sentry.io'
+  return url;
+}
+
+function normalizeAlert(raw) {
+  const id = String(raw?.id || '').trim();
+  const targetDate = String(
+    raw?.targetDate || ''
+  ).trim();
+
+  const chatId = String(
+    raw?.chatId ||
+    CONFIG.fallbackChatId ||
+    ''
+  ).trim();
+
+  const requiredTickets = Number(
+    raw?.requiredTickets
+  );
+
+  const frequencyMinutes = Number(
+    raw?.frequencyMinutes
+  );
+
+  const rawRoutes = Array.isArray(raw?.routes)
+    ? raw.routes.map(String)
+    : [];
+
+  if (!id) {
+    throw new Error(
+      'La API devolvió una alerta sin id.'
+    );
+  }
+
+  if (
+    Number.isNaN(
+      parseISODate(targetDate).getTime()
     )
+  ) {
+    throw new Error(
+      `La alerta ${id} tiene una fecha inválida: ${targetDate}.`
+    );
+  }
+
+  if (!chatId) {
+    throw new Error(
+      `La alerta ${id} no tiene chatId.`
+    );
+  }
+
+  if (
+    !Number.isInteger(requiredTickets) ||
+    requiredTickets < 1
+  ) {
+    throw new Error(
+      `La alerta ${id} tiene una cantidad mínima inválida.`
+    );
+  }
+
+  if (![5, 10].includes(frequencyMinutes)) {
+    throw new Error(
+      `La alerta ${id} tiene una frecuencia inválida.`
+    );
+  }
+
+  const routes = rawRoutes.includes('ALL')
+    ? ROUTES.map(route => route.code)
+    : [
+        ...new Set(
+          rawRoutes
+            .map(value => value.trim())
+            .filter(Boolean)
+        )
+      ];
+
+  const validRoutes = routes.filter(
+    routeCode => ROUTE_BY_CODE.has(routeCode)
+  );
+
+  if (!validRoutes.length) {
+    throw new Error(
+      `La alerta ${id} no contiene rutas válidas.`
+    );
+  }
+
+  return {
+    id,
+    active: raw?.active !== false,
+    mode: String(raw?.mode || ''),
+    targetDate,
+    routes: validRoutes,
+    requiredTickets,
+    frequencyMinutes,
+    chatId,
+    expired: raw?.expired === true
+  };
+}
+
+async function fetchAlerts() {
+  const response = await fetch(
+    composeApiUrl(),
+    {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json'
+      },
+      redirect: 'follow',
+      cache: 'no-store'
+    }
+  );
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(
+      `La API respondió HTTP ${response.status}: ${responseText}`
+    );
+  }
+
+  let payload;
+
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    throw new Error(
+      'La API no devolvió un JSON válido.'
+    );
+  }
+
+  if (!payload.ok) {
+    throw new Error(
+      `La API rechazó la consulta: ${
+        payload.error || 'sin detalle'
+      }`
+    );
+  }
+
+  if (!Array.isArray(payload.alerts)) {
+    throw new Error(
+      'La API no devolvió la lista alerts.'
+    );
+  }
+
+  const alerts = [];
+  const rejected = [];
+
+  for (const rawAlert of payload.alerts) {
+    try {
+      const alert = normalizeAlert(rawAlert);
+
+      if (
+        alert.active &&
+        !alert.expired
+      ) {
+        alerts.push(alert);
+      }
+    } catch (error) {
+      rejected.push(error.message);
+    }
+  }
+
+  if (rejected.length) {
+    console.warn(
+      'Alertas ignoradas por datos inválidos:',
+      rejected.join(' | ')
+    );
+  }
+
+  return alerts;
+}
+
+function isAlertDue(
+  alert,
+  alertState,
+  nowMs,
+  force
+) {
+  if (force) {
+    return true;
+  }
+
+  const lastCheckedAt = Date.parse(
+    String(alertState?.lastCheckedAt || '')
+  );
+
+  if (!Number.isFinite(lastCheckedAt)) {
+    return true;
+  }
+
+  const intervalMs =
+    alert.frequencyMinutes *
+    60 *
+    1000;
+
+  return (
+    nowMs - lastCheckedAt >=
+    intervalMs - CONFIG.dueToleranceMs
   );
 }
 
+function isIgnoredRequest(url) {
+  return (
+    url.includes('google-analytics.com') ||
+    url.includes('googletagmanager.com') ||
+    url.includes('doubleclick.net') ||
+    url.includes('sentry.io')
+  );
+}
 
-/* ============================================================
- * CARGA DE TU BOLETO
- * ============================================================
- */
-
-async function waitForPageReady(
-  page
-) {
+async function waitForPageReady(page) {
   await page
     .getByText(
       'Adquiere tu boleto',
@@ -737,57 +621,35 @@ async function waitForPageReady(
       }
     )
     .waitFor({
-      state:
-        'visible',
-
-      timeout:
-        CONFIG.pageTimeoutMs
+      state: 'visible',
+      timeout: CONFIG.pageTimeoutMs
     });
 
   await page
-    .locator(
-      'mat-select'
-    )
+    .locator('mat-select')
     .nth(0)
     .waitFor({
-      state:
-        'visible',
-
-      timeout:
-        CONFIG.pageTimeoutMs
+      state: 'visible',
+      timeout: CONFIG.pageTimeoutMs
     });
 
   await page
-    .locator(
-      'mat-select'
-    )
+    .locator('mat-select')
     .nth(1)
     .waitFor({
-      state:
-        'visible',
-
-      timeout:
-        CONFIG.pageTimeoutMs
+      state: 'visible',
+      timeout: CONFIG.pageTimeoutMs
     });
 }
 
-
-/* ============================================================
- * SELECTORES DE ANGULAR MATERIAL
- * ============================================================
- */
-
 async function waitForSelectEnabled(
   select,
-  timeoutMs =
-    CONFIG.actionTimeoutMs
+  timeoutMs = CONFIG.actionTimeoutMs
 ) {
-  const startedAt =
-    Date.now();
+  const startedAt = Date.now();
 
   while (
-    Date.now() -
-      startedAt <
+    Date.now() - startedAt <
     timeoutMs
   ) {
     const ariaDisabled =
@@ -809,9 +671,7 @@ async function waitForSelectEnabled(
 
     await select
       .page()
-      .waitForTimeout(
-        300
-      );
+      .waitForTimeout(300);
   }
 
   throw new Error(
@@ -819,14 +679,12 @@ async function waitForSelectEnabled(
   );
 }
 
-
 async function openMaterialOptions(
   page,
   select,
   label
 ) {
-  let lastError =
-    null;
+  let lastError = null;
 
   for (
     let attempt = 1;
@@ -834,126 +692,83 @@ async function openMaterialOptions(
     attempt++
   ) {
     console.log(
-      'Intento ' +
-      attempt +
-      ' para abrir ' +
-      label +
-      '.'
+      `Intento ${attempt} para abrir ${label}.`
     );
 
     await page.keyboard
       .press('Escape')
-      .catch(
-        () => {}
-      );
+      .catch(() => {});
 
-    await page.waitForTimeout(
-      300
-    );
+    await page.waitForTimeout(300);
 
-    const trigger =
-      select
-        .locator(
-          '.mat-mdc-select-trigger, ' +
-          '.mat-select-trigger'
-        )
-        .first();
+    const trigger = select
+      .locator(
+        '.mat-mdc-select-trigger, .mat-select-trigger'
+      )
+      .first();
 
     try {
-      if (
-        await trigger.count()
-      ) {
+      if (await trigger.count()) {
         await trigger.click({
-          timeout:
-            8000
+          timeout: 8000
         });
-
       } else {
         await select.click({
-          timeout:
-            8000
+          timeout: 8000
         });
       }
-
     } catch (error) {
-      lastError =
-        error;
+      lastError = error;
 
       try {
         await select.click({
-          force:
-            true,
-
-          timeout:
-            8000
+          force: true,
+          timeout: 8000
         });
-
       } catch (forceError) {
-        lastError =
-          forceError;
+        lastError = forceError;
       }
     }
 
-    const options =
-      page.locator(
-        '.cdk-overlay-pane [role="option"], ' +
-        '.cdk-overlay-pane mat-option'
-      );
+    const options = page.locator(
+      '.cdk-overlay-pane [role="option"], .cdk-overlay-pane mat-option'
+    );
 
     try {
       await options
         .first()
         .waitFor({
-          state:
-            'visible',
-
-          timeout:
-            6000
+          state: 'visible',
+          timeout: 6000
         });
 
       return options;
-
     } catch (error) {
-      lastError =
-        error;
+      lastError = error;
     }
 
     try {
       await select.focus();
-
-      await select.press(
-        'Enter'
-      );
+      await select.press('Enter');
 
       await options
         .first()
         .waitFor({
-          state:
-            'visible',
-
-          timeout:
-            6000
+          state: 'visible',
+          timeout: 6000
         });
 
       return options;
-
     } catch (error) {
-      lastError =
-        error;
+      lastError = error;
     }
   }
 
   throw new Error(
-    'No se pudo abrir el selector de ' +
-    label +
-    '. Último error: ' +
-    (
-      lastError?.message ||
-      'desconocido'
-    )
+    `No se pudo abrir el selector de ${label}. Último error: ` +
+    `${lastError?.message || 'desconocido'}`
   );
 }
-
 
 async function selectMaterialOption(
   page,
@@ -961,134 +776,94 @@ async function selectMaterialOption(
   targetText,
   label
 ) {
-  const select =
-    page
-      .locator(
-        'mat-select'
-      )
-      .nth(
-        selectIndex
-      );
+  const select = page
+    .locator('mat-select')
+    .nth(selectIndex);
 
   await select.waitFor({
-    state:
-      'visible',
-
-    timeout:
-      CONFIG.actionTimeoutMs
+    state: 'visible',
+    timeout: CONFIG.actionTimeoutMs
   });
 
-  await waitForSelectEnabled(
-    select
+  await waitForSelectEnabled(select);
+  await select.scrollIntoViewIfNeeded();
+
+  const options = await openMaterialOptions(
+    page,
+    select,
+    label
   );
-
-  await select
-    .scrollIntoViewIfNeeded();
-
-  const options =
-    await openMaterialOptions(
-      page,
-      select,
-      label
-    );
 
   const optionCount =
     await options.count();
 
   const normalizedTarget =
-    normalizeText(
-      targetText
-    ).toLowerCase();
+    normalizeText(targetText)
+      .toLowerCase();
 
-  const descriptions =
-    [];
-
-  let selectedOption =
-    null;
+  const descriptions = [];
+  let selectedOption = null;
 
   for (
     let index = 0;
     index < optionCount;
     index++
   ) {
-    const option =
-      options.nth(index);
+    const option = options.nth(index);
 
     if (
       !await option
         .isVisible()
-        .catch(
-          () => false
-        )
+        .catch(() => false)
     ) {
       continue;
     }
 
-    const text =
-      normalizeText(
-        await option
-          .innerText()
-          .catch(
-            () => ''
-          )
-      );
-
-    descriptions.push(
-      text
+    const text = normalizeText(
+      await option
+        .innerText()
+        .catch(() => '')
     );
+
+    descriptions.push(text);
 
     if (
       text
         .toLowerCase()
-        .includes(
-          normalizedTarget
-        )
+        .includes(normalizedTarget)
     ) {
-      selectedOption =
-        option;
-
+      selectedOption = option;
       break;
     }
   }
 
-  if (
-    !selectedOption
-  ) {
+  if (!selectedOption) {
     await page.keyboard
       .press('Escape')
-      .catch(
-        () => {}
-      );
+      .catch(() => {});
 
     console.log(
-      'No se encontró ' +
-      targetText +
-      '. Opciones: ' +
-      descriptions.join(' | ')
+      `No se encontró ${targetText}. Opciones: ${descriptions.join(' | ')}`
     );
 
     return false;
   }
 
   const ariaDisabled =
-    await selectedOption
-      .getAttribute(
-        'aria-disabled'
-      );
+    await selectedOption.getAttribute(
+      'aria-disabled'
+    );
 
   const disabled =
-    await selectedOption
-      .getAttribute(
-        'disabled'
-      );
-
-  const className =
-    String(
-      await selectedOption
-        .getAttribute(
-          'class'
-        ) || ''
+    await selectedOption.getAttribute(
+      'disabled'
     );
+
+  const className = String(
+    await selectedOption.getAttribute(
+      'class'
+    ) || ''
+  );
 
   if (
     ariaDisabled === 'true' ||
@@ -1099,14 +874,10 @@ async function selectMaterialOption(
   ) {
     await page.keyboard
       .press('Escape')
-      .catch(
-        () => {}
-      );
+      .catch(() => {});
 
     console.log(
-      'La opción ' +
-      targetText +
-      ' está deshabilitada.'
+      `La opción ${targetText} está deshabilitada.`
     );
 
     return false;
@@ -1121,91 +892,58 @@ async function selectMaterialOption(
 
   await selectedOption
     .click({
-      timeout:
-        10_000
+      timeout: 10_000
     })
-    .catch(
-      async () => {
-        await selectedOption.click({
-          force:
-            true,
+    .catch(async () => {
+      await selectedOption.click({
+        force: true,
+        timeout: 10_000
+      });
+    });
 
-          timeout:
-            10_000
-        });
-      }
-    );
-
-  await page.waitForTimeout(
-    900
-  );
+  await page.waitForTimeout(900);
 
   return true;
 }
 
-
-/* ============================================================
- * CALENDARIO
- * ============================================================
- */
-
-async function openTargetCalendar(
-  page
-) {
-  const input =
-    page
-      .locator(
-        'input[matinput][readonly]'
-      )
-      .first();
+async function openTargetCalendar(page) {
+  const input = page
+    .locator(
+      'input[matinput][readonly]'
+    )
+    .first();
 
   await input.waitFor({
-    state:
-      'visible',
-
-    timeout:
-      CONFIG.actionTimeoutMs
+    state: 'visible',
+    timeout: CONFIG.actionTimeoutMs
   });
 
-  const calendar =
-    page.locator(
-      'mat-calendar:visible'
-    );
+  const calendar = page.locator(
+    'mat-calendar:visible'
+  );
 
   if (
     !await calendar
       .isVisible()
-      .catch(
-        () => false
-      )
+      .catch(() => false)
   ) {
     await input
       .click({
-        timeout:
-          8000
+        timeout: 8000
       })
-      .catch(
-        async () => {
-          await input.click({
-            force:
-              true,
-
-            timeout:
-              8000
-          });
-        }
-      );
+      .catch(async () => {
+        await input.click({
+          force: true,
+          timeout: 8000
+        });
+      });
   }
 
   await calendar.waitFor({
-    state:
-      'visible',
-
-    timeout:
-      CONFIG.actionTimeoutMs
+    state: 'visible',
+    timeout: CONFIG.actionTimeoutMs
   });
 }
-
 
 async function waitForCalendarLabelChange(
   periodButton,
@@ -1218,9 +956,7 @@ async function waitForCalendarLabelChange(
   ) {
     await periodButton
       .page()
-      .waitForTimeout(
-        250
-      );
+      .waitForTimeout(250);
 
     const currentLabel =
       normalizeText(
@@ -1229,15 +965,12 @@ async function waitForCalendarLabelChange(
 
     if (
       currentLabel !==
-      normalizeText(
-        previousLabel
-      )
+      normalizeText(previousLabel)
     ) {
       return;
     }
   }
 }
-
 
 async function navigateCalendarToTargetMonth(
   page,
@@ -1249,17 +982,13 @@ async function navigateCalendarToTargetMonth(
   const targetMonth =
     targetDate.getUTCMonth();
 
-  const periodButton =
-    page.locator(
-      '.mat-calendar-period-button:visible'
-    );
+  const periodButton = page.locator(
+    '.mat-calendar-period-button:visible'
+  );
 
   await periodButton.waitFor({
-    state:
-      'visible',
-
-    timeout:
-      CONFIG.actionTimeoutMs
+    state: 'visible',
+    timeout: CONFIG.actionTimeoutMs
   });
 
   for (
@@ -1271,91 +1000,61 @@ async function navigateCalendarToTargetMonth(
       await periodButton.innerText();
 
     const current =
-      parseCalendarMonth(
-        label
-      );
+      parseCalendarMonth(label);
 
-    if (
-      !current
-    ) {
+    if (!current) {
       throw new Error(
-        'No se pudo interpretar el mes visible: ' +
-        label
+        `No se pudo interpretar el mes visible: ${label}`
       );
     }
 
     const difference =
-      (
-        targetYear -
-        current.year
-      ) * 12 +
-      (
-        targetMonth -
-        current.month
-      );
+      (targetYear - current.year) * 12 +
+      (targetMonth - current.month);
 
-    if (
-      difference === 0
-    ) {
-      await page.waitForTimeout(
-        1000
-      );
-
+    if (difference === 0) {
+      await page.waitForTimeout(1000);
       return;
     }
 
     const button =
       difference > 0
         ? page.locator(
-          '.mat-calendar-next-button:visible'
-        )
+            '.mat-calendar-next-button:visible'
+          )
         : page.locator(
-          '.mat-calendar-previous-button:visible'
-        );
+            '.mat-calendar-previous-button:visible'
+          );
 
     const responsePromise =
-      page
-        .waitForResponse(
-          response =>
-            response
-              .url()
-              .includes(
-                '/visita/consulta-fechas-disponibles'
-              ) &&
-            response
-              .request()
-              .method() ===
-              'POST',
-
-          {
-            timeout:
-              12_000
-          }
-        )
-        .catch(
-          () => null
-        );
+      page.waitForResponse(
+        response =>
+          response
+            .url()
+            .includes(
+              '/visita/consulta-fechas-disponibles'
+            ) &&
+          response
+            .request()
+            .method() === 'POST',
+        {
+          timeout: 12_000
+        }
+      ).catch(() => null);
 
     await button
       .click({
-        timeout:
-          8000
+        timeout: 8000
       })
-      .catch(
-        async () => {
-          await button.click({
-            force:
-              true,
-
-            timeout:
-              8000
-          });
-        }
-      );
+      .catch(async () => {
+        await button.click({
+          force: true,
+          timeout: 8000
+        });
+      });
 
     await Promise.all([
       responsePromise,
-
       waitForCalendarLabelChange(
         periodButton,
         label
@@ -1367,7 +1066,6 @@ async function navigateCalendarToTargetMonth(
     'No se pudo llegar al mes objetivo.'
   );
 }
-
 
 async function findTargetDayCell(
   page,
@@ -1383,48 +1081,35 @@ async function findTargetDayCell(
     targetDate.getUTCFullYear();
 
   const monthName =
-    SPANISH_MONTHS[
-      targetMonth
-    ];
+    SPANISH_MONTHS[targetMonth];
 
-  const cells =
-    page.locator(
-      'mat-calendar:visible ' +
-      'button.mat-calendar-body-cell'
-    );
+  const cells = page.locator(
+    'mat-calendar:visible button.mat-calendar-body-cell'
+  );
 
-  const count =
-    await cells.count();
-
-  let fallback =
-    null;
+  const count = await cells.count();
+  let fallback = null;
 
   for (
     let index = 0;
     index < count;
     index++
   ) {
-    const cell =
-      cells.nth(index);
+    const cell = cells.nth(index);
 
-    const text =
-      normalizeText(
-        await cell
-          .innerText()
-          .catch(
-            () => ''
-          )
-      );
+    const text = normalizeText(
+      await cell
+        .innerText()
+        .catch(() => '')
+    );
 
     if (
-      text !==
-      String(targetDay)
+      text !== String(targetDay)
     ) {
       continue;
     }
 
-    fallback ??=
-      cell;
+    fallback ??= cell;
 
     const ariaLabel =
       normalizeText(
@@ -1437,9 +1122,7 @@ async function findTargetDayCell(
       ariaLabel.includes(
         String(targetYear)
       ) &&
-      ariaLabel.includes(
-        monthName
-      )
+      ariaLabel.includes(monthName)
     ) {
       return cell;
     }
@@ -1447,7 +1130,6 @@ async function findTargetDayCell(
 
   return fallback;
 }
-
 
 async function selectTargetDay(
   page,
@@ -1459,13 +1141,9 @@ async function selectTargetDay(
       targetDate
     );
 
-  if (
-    !cell
-  ) {
+  if (!cell) {
     throw new Error(
-      'No se encontró el día ' +
-      targetDate.getUTCDate() +
-      ' en el calendario.'
+      `No se encontró el día ${targetDate.getUTCDate()} en el calendario.`
     );
   }
 
@@ -1479,12 +1157,11 @@ async function selectTargetDay(
       'disabled'
     );
 
-  const className =
-    String(
-      await cell.getAttribute(
-        'class'
-      ) || ''
-    );
+  const className = String(
+    await cell.getAttribute(
+      'class'
+    ) || ''
+  );
 
   const isDisabled =
     ariaDisabled === 'true' ||
@@ -1494,13 +1171,9 @@ async function selectTargetDay(
     ) ||
     await cell
       .isDisabled()
-      .catch(
-        () => false
-      );
+      .catch(() => false);
 
-  if (
-    isDisabled
-  ) {
+  if (isDisabled) {
     console.log(
       'La fecha está deshabilitada.'
     );
@@ -1509,76 +1182,47 @@ async function selectTargetDay(
   }
 
   const scheduleResponse =
-    page
-      .waitForResponse(
-        response =>
-          response
-            .url()
-            .includes(
-              '/visita/consulta-horarios'
-            ) &&
-          response
-            .request()
-            .method() ===
-            'POST',
-
-        {
-          timeout:
-            12_000
-        }
-      )
-      .catch(
-        () => null
-      );
+    page.waitForResponse(
+      response =>
+        response
+          .url()
+          .includes(
+            '/visita/consulta-horarios'
+          ) &&
+        response
+          .request()
+          .method() === 'POST',
+      {
+        timeout: 12_000
+      }
+    ).catch(() => null);
 
   await cell
     .click({
-      timeout:
-        8000
+      timeout: 8000
     })
-    .catch(
-      async () => {
-        await cell.click({
-          force:
-            true,
-
-          timeout:
-            8000
-        });
-      }
-    );
+    .catch(async () => {
+      await cell.click({
+        force: true,
+        timeout: 8000
+      });
+    });
 
   await scheduleResponse;
-
-  await page.waitForTimeout(
-    1000
-  );
+  await page.waitForTimeout(1000);
 
   return true;
 }
 
-
-/* ============================================================
- * HORARIOS
- * ============================================================
- */
-
-async function readAvailableSlots(
-  page
-) {
-  const scheduleSelect =
-    page
-      .locator(
-        'mat-select'
-      )
-      .nth(2);
+async function readAvailableSlots(page) {
+  const scheduleSelect = page
+    .locator('mat-select')
+    .nth(2);
 
   if (
     !await scheduleSelect
       .isVisible()
-      .catch(
-        () => false
-      )
+      .catch(() => false)
   ) {
     console.log(
       'No apareció el selector de horarios.'
@@ -1592,7 +1236,6 @@ async function readAvailableSlots(
       scheduleSelect,
       10_000
     );
-
   } catch {
     console.log(
       'El selector de horarios está deshabilitado.'
@@ -1611,8 +1254,7 @@ async function readAvailableSlots(
   const count =
     await options.count();
 
-  const slots =
-    [];
+  const slots = [];
 
   for (
     let index = 0;
@@ -1625,9 +1267,7 @@ async function readAvailableSlots(
     if (
       !await option
         .isVisible()
-        .catch(
-          () => false
-        )
+        .catch(() => false)
     ) {
       continue;
     }
@@ -1636,9 +1276,7 @@ async function readAvailableSlots(
       normalizeText(
         await option
           .innerText()
-          .catch(
-            () => ''
-          )
+          .catch(() => '')
       );
 
     const ariaDisabled =
@@ -1646,12 +1284,11 @@ async function readAvailableSlots(
         'aria-disabled'
       );
 
-    const className =
-      String(
-        await option.getAttribute(
-          'class'
-        ) || ''
-      );
+    const className = String(
+      await option.getAttribute(
+        'class'
+      ) || ''
+    );
 
     const disabled =
       ariaDisabled === 'true' ||
@@ -1659,15 +1296,13 @@ async function readAvailableSlots(
         'option-disabled'
       );
 
-    const timeMatch =
-      text.match(
-        /(\d{1,2}:\d{2})/
-      );
+    const timeMatch = text.match(
+      /(\d{1,2}:\d{2})/
+    );
 
-    const seatsMatch =
-      text.match(
-        /(\d+)\s*(?:boletos?|entradas?|cupos?)/i
-      );
+    const seatsMatch = text.match(
+      /(\d+)\s*(?:boletos?|entradas?|cupos?)/i
+    );
 
     console.log(
       'Horario observado:',
@@ -1682,40 +1317,27 @@ async function readAvailableSlots(
     }
 
     slots.push({
-      time:
-        timeMatch[1],
-
-      seats:
-        Number.parseInt(
-          seatsMatch[1],
-          10
-        ),
-
+      time: timeMatch[1],
+      seats: Number.parseInt(
+        seatsMatch[1],
+        10
+      ),
       disabled,
-
       text
     });
   }
 
   await page.keyboard
     .press('Escape')
-    .catch(
-      () => {}
-    );
+    .catch(() => {});
 
   return slots;
 }
 
-
-/* ============================================================
- * REVISIÓN DE UNA RUTA
- * ============================================================
- */
-
 async function checkRoute(
   context,
   route,
-  target
+  targetDateIso
 ) {
   const page =
     await context.newPage();
@@ -1732,13 +1354,8 @@ async function checkRoute(
           .request()
           .url();
 
-      if (
-        isIgnoredRequest(
-          url
-        )
-      ) {
+      if (isIgnoredRequest(url)) {
         await routeRequest.abort();
-
       } else {
         await routeRequest.continue();
       }
@@ -1759,68 +1376,44 @@ async function checkRoute(
       console.warn(
         'Solicitud fallida:',
         request.url(),
-        request.failure()
-          ?.errorText || ''
+        request.failure()?.errorText || ''
       );
     }
   );
 
   try {
     console.log(
-      '\n===================================='
+      `\nRevisando ${targetDateIso} — ruta ${route.code}: ${route.name}`
     );
 
-    console.log(
-      'Revisando ruta ' +
-      route.code +
-      ': ' +
-      route.name
-    );
-
-    /*
-     * Se registra la espera antes de abrir la página.
-     */
     const placeInfoPromise =
-      page
-        .waitForResponse(
-          response =>
-            response
-              .url()
-              .includes(
-                '/visita/lugar-info'
-              ) &&
-            response.status() ===
-              200,
-
-          {
-            timeout:
-              CONFIG.pageTimeoutMs
-          }
-        )
-        .catch(
-          () => null
-        );
+      page.waitForResponse(
+        response =>
+          response
+            .url()
+            .includes(
+              '/visita/lugar-info'
+            ) &&
+          response.status() === 200,
+        {
+          timeout:
+            CONFIG.pageTimeoutMs
+        }
+      ).catch(() => null);
 
     await page.goto(
       CONFIG.siteUrl,
       {
         waitUntil:
           'domcontentloaded',
-
         timeout:
           CONFIG.pageTimeoutMs
       }
     );
 
     await placeInfoPromise;
-
-    await waitForPageReady(
-      page
-    );
-
-    await page.waitForTimeout(
-      700
-    );
+    await waitForPageReady(page);
+    await page.waitForTimeout(700);
 
     const circuitSelected =
       await selectMaterialOption(
@@ -1830,42 +1423,33 @@ async function checkRoute(
         'circuito'
       );
 
-    if (
-      !circuitSelected
-    ) {
-      throw new Error(
-        'No se encontró ' +
-        route.circuitText +
-        '.'
-      );
+    if (!circuitSelected) {
+      return {
+        route,
+        targetDate: targetDateIso,
+        processed: true,
+        routeEnabled: false,
+        dateEnabled: false,
+        slots: [],
+        error: null
+      };
     }
 
-    /*
-     * Se registra antes de seleccionar la ruta
-     * para no perder la respuesta de las fechas.
-     */
     const datesResponse =
-      page
-        .waitForResponse(
-          response =>
-            response
-              .url()
-              .includes(
-                '/visita/consulta-fechas-disponibles'
-              ) &&
-            response
-              .request()
-              .method() ===
-              'POST',
-
-          {
-            timeout:
-              15_000
-          }
-        )
-        .catch(
-          () => null
-        );
+      page.waitForResponse(
+        response =>
+          response
+            .url()
+            .includes(
+              '/visita/consulta-fechas-disponibles'
+            ) &&
+          response
+            .request()
+            .method() === 'POST',
+        {
+          timeout: 15_000
+        }
+      ).catch(() => null);
 
     const routeSelected =
       await selectMaterialOption(
@@ -1875,357 +1459,402 @@ async function checkRoute(
         'ruta'
       );
 
-    if (
-      !routeSelected
-    ) {
+    if (!routeSelected) {
       return {
         route,
+        targetDate: targetDateIso,
         processed: true,
         routeEnabled: false,
         dateEnabled: false,
         slots: [],
-        matchingSlots: [],
         error: null
       };
     }
 
     await datesResponse;
+    await openTargetCalendar(page);
 
-    await openTargetCalendar(
-      page
-    );
+    const targetDate =
+      parseISODate(
+        targetDateIso
+      );
 
     await navigateCalendarToTargetMonth(
       page,
-      target.date
+      targetDate
     );
 
     const dateEnabled =
       await selectTargetDay(
         page,
-        target.date
+        targetDate
       );
 
-    if (
-      !dateEnabled
-    ) {
+    if (!dateEnabled) {
       return {
         route,
+        targetDate: targetDateIso,
         processed: true,
         routeEnabled: true,
         dateEnabled: false,
         slots: [],
-        matchingSlots: [],
         error: null
       };
     }
 
     const slots =
-      await readAvailableSlots(
-        page
-      );
-
-    const matchingSlots =
-      slots.filter(
-        slot =>
-          !slot.disabled &&
-          slot.seats >=
-            CONFIG.requiredTickets
-      );
+      await readAvailableSlots(page);
 
     return {
       route,
+      targetDate: targetDateIso,
       processed: true,
       routeEnabled: true,
       dateEnabled: true,
       slots,
-      matchingSlots,
       error: null
     };
-
   } catch (error) {
     console.error(
-      'Error en ruta ' +
-      route.code +
-      ':',
+      `Error en ${targetDateIso} / ${route.code}:`,
       error.message
     );
 
     await saveDiagnostic(
       page,
-      'error-' +
-      route.code
+      `error-${targetDateIso}-${route.code}`
     );
 
     return {
       route,
+      targetDate: targetDateIso,
       processed: false,
       routeEnabled: false,
       dateEnabled: false,
       slots: [],
-      matchingSlots: [],
-      error:
-        error.message
+      error: error.message
     };
-
   } finally {
     await page.close();
   }
 }
 
+function checkKey(
+  targetDate,
+  routeCode
+) {
+  return `${targetDate}|${routeCode}`;
+}
 
-/* ============================================================
- * MENSAJES DE RESULTADO
- * ============================================================
- */
+function availabilityKey(
+  routeCode,
+  time
+) {
+  return `${routeCode}|${time}`;
+}
 
 function groupAvailabilityByRoute(
-  availableItems
+  items
 ) {
-  const groups =
-    new Map();
+  const groups = new Map();
 
-  for (
-    const item of availableItems
-  ) {
+  for (const item of items) {
     if (
-      !groups.has(
-        item.route.code
-      )
+      !groups.has(item.route.code)
     ) {
       groups.set(
         item.route.code,
         {
-          route:
-            item.route,
-
-          slots:
-            []
+          route: item.route,
+          slots: []
         }
       );
     }
 
     groups
-      .get(
-        item.route.code
-      )
+      .get(item.route.code)
       .slots
-      .push(
-        item
-      );
+      .push(item);
   }
 
-  return [
-    ...groups.values()
-  ];
+  return [...groups.values()];
 }
 
-
 function buildAvailabilityBody(
-  targetDate,
-  availableItems
+  alert,
+  items
 ) {
   const routeSections =
-    groupAvailabilityByRoute(
-      availableItems
-    )
-      .map(
-        group => {
-          const slots =
-            group.slots
-              .map(
-                item =>
-                  '• ' +
-                  item.time +
-                  ' — ' +
-                  item.seats +
-                  ' ' +
-                  (
-                    item.seats === 1
-                      ? 'cupo'
-                      : 'cupos'
-                  )
-              )
-              .join('\n');
+    groupAvailabilityByRoute(items)
+      .map(group => {
+        const slots = group.slots
+          .map(
+            item =>
+              `• ${item.time} — ${item.seats} ${
+                item.seats === 1
+                  ? 'cupo'
+                  : 'cupos'
+              }`
+          )
+          .join('\n');
 
-          return (
-            'Ruta ' +
-            group.route.code +
-            ' — ' +
-            group.route.name +
-            '\n' +
-            slots
-          );
-        }
-      )
+        return (
+          `Ruta ${group.route.code} — ${group.route.name}\n` +
+          slots
+        );
+      })
       .join('\n\n');
 
   return (
-    'Fecha: ' +
-    formatDatePE(
-      targetDate
-    ) +
-    '\n' +
-    'Cantidad mínima: ' +
-    CONFIG.requiredTickets +
-    '\n\n' +
+    `Alerta: ${alert.id}\n` +
+    `Fecha: ${formatDatePE(alert.targetDate)}\n` +
+    `Cantidad mínima: ${alert.requiredTickets}\n` +
+    `Frecuencia: cada ${alert.frequencyMinutes} minutos\n\n` +
     routeSections
   );
 }
 
-
 function buildAvailabilityMessage(
-  targetDate,
-  availableItems
+  alert,
+  items
 ) {
   return (
-    '🚨 ENTRADAS LIBERADAS PARA MAÑANA\n\n' +
+    '🚨 ENTRADAS DISPONIBLES — MACHU PICCHU\n\n' +
     buildAvailabilityBody(
-      targetDate,
-      availableItems
+      alert,
+      items
     ) +
-    '\n\nCompra inmediatamente en:\n' +
-    CONFIG.siteUrl +
-    '\n\nDetectado: ' +
-    getLimaTimestamp()
+    `\n\nCompra inmediatamente en:\n${CONFIG.siteUrl}` +
+    `\n\nDetectado: ${getLimaTimestamp()}`
   );
 }
 
-
 function buildManualSummary(
-  targetDate,
-  results,
+  alert,
+  routeResults,
   availableItems
 ) {
   const processed =
-    results.filter(
-      result =>
-        result.processed
+    routeResults.filter(
+      result => result.processed
     );
 
   const errors =
-    results.filter(
-      result =>
-        !result.processed
+    routeResults.filter(
+      result => !result.processed
     );
 
   const unavailableRoutes =
-    results.filter(
+    routeResults.filter(
       result =>
         result.processed &&
         !result.routeEnabled
     );
 
-  const notes =
-    [];
+  const notes = [];
 
-  if (
-    unavailableRoutes.length
-  ) {
+  if (unavailableRoutes.length) {
     notes.push(
       'Rutas no habilitadas en el portal: ' +
       unavailableRoutes
-        .map(
-          item =>
-            item.route.code
-        )
+        .map(item => item.route.code)
         .join(', ')
     );
   }
 
-  if (
-    errors.length
-  ) {
+  if (errors.length) {
     notes.push(
       'Rutas con error: ' +
       errors
-        .map(
-          item =>
-            item.route.code
-        )
+        .map(item => item.route.code)
         .join(', ')
     );
   }
 
-  let resultText;
-
-  if (
-    processed.length === 0
-  ) {
-    resultText =
-      'No fue posible verificar la disponibilidad en ninguna ruta.';
-
-  } else if (
+  const resultText =
     availableItems.length
-  ) {
-    resultText =
-      'Se encontraron cupos:\n\n' +
-      buildAvailabilityBody(
-        targetDate,
-        availableItems
-      );
-
-  } else {
-    resultText =
-      'No se encontraron rutas con al menos ' +
-      CONFIG.requiredTickets +
-      ' cupos disponibles.';
-  }
+      ? (
+          `Se encontraron cupos:\n\n` +
+          buildAvailabilityBody(
+            alert,
+            availableItems
+          )
+        )
+      : (
+          `No se encontraron rutas con al menos ${alert.requiredTickets} cupos disponibles.`
+        );
 
   return (
     '🔎 REVISIÓN MANUAL COMPLETADA\n\n' +
-    'Fecha vigilada: ' +
-    formatDatePE(
-      targetDate
-    ) +
-    '\n' +
-    'Rutas procesadas: ' +
-    processed.length +
-    ' de ' +
-    ROUTES.length +
-    '\n\n' +
+    `Alerta: ${alert.id}\n` +
+    `Fecha vigilada: ${formatDatePE(alert.targetDate)}\n` +
+    `Rutas procesadas: ${processed.length} de ${alert.routes.length}\n\n` +
     resultText +
     (
       notes.length
-        ? (
-          '\n\n' +
-          notes.join('\n')
-        )
+        ? `\n\n${notes.join('\n')}`
         : ''
     ) +
-    '\n\nRevisado: ' +
-    getLimaTimestamp()
+    `\n\nRevisado: ${getLimaTimestamp()}`
   );
 }
 
+function buildNoAlertsMessage() {
+  return (
+    'ℹ️ MONITOR MACHU PICCHU\n\n' +
+    'La API funciona, pero no existen alertas activas y vigentes en la hoja.'
+  );
+}
 
-/* ============================================================
- * EJECUCIÓN PRINCIPAL
- * ============================================================
- */
+function shouldNotifySystemError(
+  lastNotifiedAt,
+  nowMs
+) {
+  const previous = Date.parse(
+    String(lastNotifiedAt || '')
+  );
+
+  return (
+    !Number.isFinite(previous) ||
+    nowMs - previous >=
+      CONFIG.systemErrorCooldownMs
+  );
+}
 
 async function main() {
-  validateConfiguration();
+  validateEnvironment();
   ensureDiagnosticDirectory();
 
-  const target =
-    getTomorrowInLima();
+  const now = new Date();
+  const nowMs = now.getTime();
+  const state = loadState();
 
-  const previousState =
-    loadState();
+  let alerts;
 
-  const previousKeys =
-    previousState.targetDate ===
-    target.iso
-      ? new Set(
-        previousState.availableKeys
+  try {
+    alerts = await fetchAlerts();
+
+    state.system
+      .lastApiErrorNotifiedAt = null;
+  } catch (error) {
+    console.error(
+      'Error consultando la API de alertas:',
+      error.message
+    );
+
+    if (
+      CONFIG.notifyStatus ||
+      shouldNotifySystemError(
+        state.system
+          .lastApiErrorNotifiedAt,
+        nowMs
       )
-      : new Set();
+    ) {
+      await sendTelegram(
+        CONFIG.fallbackChatId,
+        '❌ ERROR AL LEER LAS ALERTAS\n\n' +
+        `${error.message}\n\nHora: ${getLimaTimestamp()}`
+      ).catch(telegramError => {
+        console.error(
+          'No se pudo avisar por Telegram:',
+          telegramError.message
+        );
+      });
+
+      state.system
+        .lastApiErrorNotifiedAt =
+          now.toISOString();
+    }
+
+    saveState(state);
+
+    process.exitCode = 1;
+    return;
+  }
+
+  const activeIds = new Set(
+    alerts.map(alert => alert.id)
+  );
+
+  for (
+    const storedId of
+    Object.keys(state.alerts)
+  ) {
+    if (!activeIds.has(storedId)) {
+      delete state.alerts[storedId];
+    }
+  }
+
+  if (!alerts.length) {
+    console.log(
+      'No existen alertas activas y vigentes.'
+    );
+
+    if (CONFIG.notifyStatus) {
+      await sendTelegram(
+        CONFIG.fallbackChatId,
+        buildNoAlertsMessage()
+      );
+    }
+
+    saveState(state);
+    return;
+  }
+
+  const dueAlerts = alerts.filter(
+    alert =>
+      isAlertDue(
+        alert,
+        state.alerts[alert.id],
+        nowMs,
+        CONFIG.notifyStatus
+      )
+  );
+
+  if (!dueAlerts.length) {
+    console.log(
+      'Ninguna alerta necesita revisión en esta ejecución.'
+    );
+
+    saveState(state);
+    return;
+  }
 
   console.log(
-    'Fecha de mañana en Perú:',
-    target.iso
+    'Alertas a procesar:',
+    dueAlerts
+      .map(
+        alert =>
+          `${alert.id} (${alert.frequencyMinutes} min)`
+      )
+      .join(', ')
   );
+
+  const uniqueChecks = new Map();
+
+  for (const alert of dueAlerts) {
+    for (
+      const routeCode of
+      alert.routes
+    ) {
+      const route =
+        ROUTE_BY_CODE.get(
+          routeCode
+        );
+
+      uniqueChecks.set(
+        checkKey(
+          alert.targetDate,
+          routeCode
+        ),
+        {
+          targetDate:
+            alert.targetDate,
+          route
+        }
+      );
+    }
+  }
 
   const browser =
     await chromium.launch({
@@ -2234,45 +1863,35 @@ async function main() {
 
   const context =
     await browser.newContext({
-      locale:
-        'es-PE',
-
-      timezoneId:
-        CONFIG.timeZone,
-
+      locale: 'es-PE',
+      timezoneId: CONFIG.timeZone,
       viewport: {
-        width:
-          1440,
-
-        height:
-          1100
+        width: 1440,
+        height: 1100
       },
-
       extraHTTPHeaders: {
         'Accept-Language':
           'es-PE,es;q=0.9,en;q=0.8'
       }
     });
 
-  try {
-    const results =
-      [];
+  const resultsByCheck =
+    new Map();
 
-    /*
-     * Revisa las rutas una por una para
-     * no sobrecargar el portal.
-     */
+  try {
     for (
-      const route of ROUTES
+      const [key, check] of
+      uniqueChecks
     ) {
       const result =
         await checkRoute(
           context,
-          route,
-          target
+          check.route,
+          check.targetDate
         );
 
-      results.push(
+      resultsByCheck.set(
+        key,
         result
       );
 
@@ -2284,28 +1903,66 @@ async function main() {
           )
       );
     }
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+
+  for (const alert of dueAlerts) {
+    const previous =
+      state.alerts[alert.id] || {};
+
+    const previousKeys =
+      previous.targetDate ===
+      alert.targetDate
+        ? new Set(
+            Array.isArray(
+              previous.availableKeys
+            )
+              ? previous.availableKeys
+              : []
+          )
+        : new Set();
+
+    const routeResults =
+      alert.routes
+        .map(
+          routeCode =>
+            resultsByCheck.get(
+              checkKey(
+                alert.targetDate,
+                routeCode
+              )
+            )
+        )
+        .filter(Boolean);
 
     const availableItems =
-      results
+      routeResults
         .flatMap(
           result =>
-            result.matchingSlots.map(
-              slot => ({
-                key:
-                  result.route.code +
-                  '|' +
-                  slot.time,
-
-                route:
-                  result.route,
-
-                time:
-                  slot.time,
-
-                seats:
-                  slot.seats
-              })
-            )
+            result.slots
+              .filter(
+                slot =>
+                  !slot.disabled &&
+                  slot.seats >=
+                    alert.requiredTickets
+              )
+              .map(
+                slot => ({
+                  key:
+                    availabilityKey(
+                      result.route.code,
+                      slot.time
+                    ),
+                  route:
+                    result.route,
+                  time:
+                    slot.time,
+                  seats:
+                    slot.seats
+                })
+              )
         )
         .sort(
           (a, b) =>
@@ -2314,13 +1971,9 @@ async function main() {
             )
         );
 
-    /*
-     * Si una ruta falló, se conserva su estado anterior
-     * para evitar falsas alertas repetidas.
-     */
     const failedRouteCodes =
       new Set(
-        results
+        routeResults
           .filter(
             result =>
               !result.processed
@@ -2332,27 +1985,21 @@ async function main() {
       );
 
     const preservedKeys =
-      [
-        ...previousKeys
-      ].filter(
-        key => {
-          const routeCode =
-            key.split('|')[0];
-
-          return failedRouteCodes.has(
-            routeCode
-          );
-        }
+      [...previousKeys].filter(
+        key =>
+          failedRouteCodes.has(
+            key.split('|')[0]
+          )
       );
 
-    const stateKeys = [
-      ...preservedKeys,
-
-      ...availableItems.map(
-        item =>
-          item.key
-      )
-    ];
+    const currentKeys = [
+      ...new Set([
+        ...preservedKeys,
+        ...availableItems.map(
+          item => item.key
+        )
+      ])
+    ].sort();
 
     const newAvailableItems =
       availableItems.filter(
@@ -2362,108 +2009,75 @@ async function main() {
           )
       );
 
-    const processedCount =
-      results.filter(
-        result =>
-          result.processed
-      ).length;
-
     const allRoutesFailed =
-      processedCount === 0;
+      routeResults.length > 0 &&
+      routeResults.every(
+        result =>
+          !result.processed
+      );
 
-    console.log(
-      JSON.stringify(
-        {
-          targetDate:
-            target.iso,
-
-          processedRoutes:
-            processedCount,
-
-          availableItems,
-
-          newAvailableItems
-        },
-        null,
-        2
-      )
-    );
-
-    /*
-     * Una ejecución manual siempre envía
-     * el resumen completo.
-     */
-    if (
-      CONFIG.notifyStatus
-    ) {
+    if (CONFIG.notifyStatus) {
       await sendTelegram(
+        alert.chatId,
         buildManualSummary(
-          target.iso,
-          results,
+          alert,
+          routeResults,
           availableItems
         )
       );
-
-    /*
-     * Una ejecución automática solo avisa
-     * cuando aparece disponibilidad nueva.
-     */
     } else if (
       newAvailableItems.length > 0
     ) {
       await sendTelegram(
+        alert.chatId,
         buildAvailabilityMessage(
-          target.iso,
+          alert,
           availableItems
         )
       );
 
       console.log(
-        'Alerta de disponibilidad enviada.'
+        `Alerta enviada: ${alert.id}`
       );
-
     } else {
       console.log(
-        'No existen nuevas disponibilidades.'
+        `Sin disponibilidad nueva para ${alert.id}.`
       );
     }
 
-    /*
-     * En automático, informa una sola vez
-     * si fallan las diez rutas.
-     */
     if (
       allRoutesFailed &&
-      !CONFIG.notifyStatus &&
-      !previousState.allRoutesFailed
+      previous.allRoutesFailed !== true
     ) {
       await sendTelegram(
-        '⚠️ EL MONITOR NO PUDO REVISAR TU BOLETO\n\n' +
-        'Ninguna ruta pudo procesarse en esta ejecución.\n' +
-        'Revisa GitHub Actions y los archivos de diagnóstico.\n\n' +
-        'Hora: ' +
-        getLimaTimestamp()
-      );
+        alert.chatId,
+        '⚠️ NO SE PUDO REVISAR TU ALERTA\n\n' +
+        `Alerta: ${alert.id}\n` +
+        `Fecha: ${formatDatePE(alert.targetDate)}\n\n` +
+        'Ninguna de sus rutas pudo procesarse en esta ejecución.\n' +
+        `Hora: ${getLimaTimestamp()}`
+      ).catch(error => {
+        console.error(
+          'No se pudo enviar el aviso de fallo:',
+          error.message
+        );
+      });
     }
 
-    saveState(
-      target.iso,
-      stateKeys,
-      allRoutesFailed
-    );
-
-    if (
-      allRoutesFailed
-    ) {
-      process.exitCode =
-        1;
-    }
-
-  } finally {
-    await context.close();
-    await browser.close();
+    state.alerts[alert.id] = {
+      lastCheckedAt:
+        now.toISOString(),
+      targetDate:
+        alert.targetDate,
+      availableKeys:
+        currentKeys,
+      allRoutesFailed,
+      frequencyMinutes:
+        alert.frequencyMinutes
+    };
   }
-}
 
+  saveState(state);
+}
 
 await main();
