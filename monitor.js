@@ -1,60 +1,26 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 
-/* ============================================================
- * CONFIGURACIÓN
- * ============================================================
- *
- * Estos valores también podrán cambiarse desde GitHub Actions.
- */
-
 const CONFIG = Object.freeze({
-  siteUrl:
-    'https://tuboleto.cultura.pe/llaqta_machupicchu',
+  siteUrl: 'https://tuboleto.cultura.pe/llaqta_machupicchu',
 
-  circuitText:
-    process.env.TARGET_CIRCUIT ||
-    'Circuito 2',
+  circuitText: process.env.TARGET_CIRCUIT || 'Circuito 2',
+  routeText: process.env.TARGET_ROUTE || 'Ruta 2-A',
+  routeName: process.env.TARGET_ROUTE_NAME || 'Machupicchu Clásico',
+  targetDate: process.env.TARGET_DATE || '2026-08-13',
 
-  routeText:
-    process.env.TARGET_ROUTE ||
-    'Ruta 2-A',
+  requiredTickets: Number.parseInt(
+    process.env.REQUIRED_TICKETS || '4',
+    10
+  ),
 
-  routeName:
-    process.env.TARGET_ROUTE_NAME ||
-    'Machupicchu Clásico',
-
-  targetDate:
-    process.env.TARGET_DATE ||
-    '2026-08-13',
-
-  requiredTickets:
-    Number.parseInt(
-      process.env.REQUIRED_TICKETS || '4',
-      10
-    ),
-
-  /*
-   * En una ejecución manual enviaremos también
-   * el resultado cuando no haya entradas.
-   */
   notifyStatus:
-    String(
-      process.env.NOTIFY_STATUS || 'false'
-    ).toLowerCase() === 'true',
+    String(process.env.NOTIFY_STATUS || 'false').toLowerCase() ===
+    'true',
 
-  stateFile:
-    'state.json',
-
-  screenshotFile:
-    'debug.png'
+  stateFile: 'state.json',
+  diagnosticDirectory: 'diagnostico'
 });
-
-
-/* ============================================================
- * MESES DEL CALENDARIO
- * ============================================================
- */
 
 const MONTHS = Object.freeze({
   ENE: 0,
@@ -100,39 +66,73 @@ const MONTHS = Object.freeze({
   DEC: 11
 });
 
+const SPANISH_MONTHS = Object.freeze([
+  'enero',
+  'febrero',
+  'marzo',
+  'abril',
+  'mayo',
+  'junio',
+  'julio',
+  'agosto',
+  'septiembre',
+  'octubre',
+  'noviembre',
+  'diciembre'
+]);
 
-/* ============================================================
- * VALIDACIÓN
- * ============================================================
- */
+function normalizeText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseISODate(isoDate) {
+  const parts = String(isoDate).split('-').map(Number);
+
+  if (parts.length !== 3) {
+    return new Date(Number.NaN);
+  }
+
+  return new Date(
+    Date.UTC(
+      parts[0],
+      parts[1] - 1,
+      parts[2]
+    )
+  );
+}
+
+function formatDatePE(isoDate) {
+  const [year, month, day] = isoDate.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function getLimaTimestamp() {
+  return new Intl.DateTimeFormat('es-PE', {
+    timeZone: 'America/Lima',
+    dateStyle: 'short',
+    timeStyle: 'medium'
+  }).format(new Date());
+}
 
 function validateConfiguration() {
-  if (
-    !/^\d{4}-\d{2}-\d{2}$/.test(
-      CONFIG.targetDate
-    )
-  ) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(CONFIG.targetDate)) {
     throw new Error(
       'TARGET_DATE debe tener el formato AAAA-MM-DD.'
     );
   }
 
-  const date = parseISODate(
-    CONFIG.targetDate
-  );
+  const date = parseISODate(CONFIG.targetDate);
 
-  if (
-    Number.isNaN(date.getTime())
-  ) {
-    throw new Error(
-      'TARGET_DATE no contiene una fecha válida.'
-    );
+  if (Number.isNaN(date.getTime())) {
+    throw new Error('TARGET_DATE no es una fecha válida.');
   }
 
   if (
-    !Number.isInteger(
-      CONFIG.requiredTickets
-    ) ||
+    !Number.isInteger(CONFIG.requiredTickets) ||
     CONFIG.requiredTickets < 1
   ) {
     throw new Error(
@@ -141,126 +141,42 @@ function validateConfiguration() {
   }
 }
 
-
-/* ============================================================
- * FUNCIONES DE TEXTO Y FECHAS
- * ============================================================
- */
-
-function normalizeText(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(
-      /[\u0300-\u036f]/g,
-      ''
-    )
-    .replace(
-      /\s+/g,
-      ' '
-    )
-    .trim();
-}
-
-
-function parseISODate(isoDate) {
-  const [
-    year,
-    month,
-    day
-  ] = isoDate
-    .split('-')
-    .map(Number);
-
-  return new Date(
-    Date.UTC(
-      year,
-      month - 1,
-      day
-    )
+function ensureDiagnosticDirectory() {
+  fs.mkdirSync(
+    CONFIG.diagnosticDirectory,
+    { recursive: true }
   );
 }
 
+async function saveDiagnostic(page, name) {
+  ensureDiagnosticDirectory();
 
-function formatDatePE(isoDate) {
-  const [
-    year,
-    month,
-    day
-  ] = isoDate.split('-');
+  await page
+    .screenshot({
+      path: `${CONFIG.diagnosticDirectory}/${name}.png`,
+      fullPage: true
+    })
+    .catch(error => {
+      console.warn(
+        `No se pudo guardar ${name}.png:`,
+        error.message
+      );
+    });
 
-  return (
-    day +
-    '/' +
-    month +
-    '/' +
-    year
-  );
-}
+  const html = await page
+    .content()
+    .catch(() => '');
 
-
-function getLimaTimestamp() {
-  return new Intl.DateTimeFormat(
-    'es-PE',
-    {
-      timeZone:
-        'America/Lima',
-
-      dateStyle:
-        'short',
-
-      timeStyle:
-        'medium'
-    }
-  ).format(
-    new Date()
-  );
-}
-
-
-function parseCalendarMonth(label) {
-  const cleanLabel =
-    normalizeText(label)
-      .toUpperCase()
-      .replace(/\./g, '');
-
-  const parts =
-    cleanLabel.split(' ');
-
-  if (
-    parts.length < 2
-  ) {
-    return null;
-  }
-
-  const month =
-    MONTHS[parts[0]];
-
-  const year =
-    Number.parseInt(
-      parts[parts.length - 1],
-      10
+  if (html) {
+    fs.writeFileSync(
+      `${CONFIG.diagnosticDirectory}/${name}.html`,
+      html,
+      'utf8'
     );
-
-  if (
-    month === undefined ||
-    !Number.isInteger(year)
-  ) {
-    return null;
   }
-
-  return {
-    month,
-    year
-  };
 }
 
-
-/* ============================================================
- * ESTADO PARA EVITAR ALERTAS REPETIDAS
- * ============================================================
- */
-
-function getConfigurationKey() {
+function configurationKey() {
   return [
     CONFIG.circuitText,
     CONFIG.routeText,
@@ -269,39 +185,23 @@ function getConfigurationKey() {
   ].join('|');
 }
 
-
 function loadState() {
   try {
-    if (
-      !fs.existsSync(
-        CONFIG.stateFile
-      )
-    ) {
+    if (!fs.existsSync(CONFIG.stateFile)) {
       return {
         configKey: '',
         available: false
       };
     }
 
-    const content =
-      fs.readFileSync(
-        CONFIG.stateFile,
-        'utf8'
-      );
-
-    const state =
-      JSON.parse(content);
+    const parsed = JSON.parse(
+      fs.readFileSync(CONFIG.stateFile, 'utf8')
+    );
 
     return {
-      configKey:
-        String(
-          state.configKey || ''
-        ),
-
-      available:
-        state.available === true
+      configKey: String(parsed.configKey || ''),
+      available: parsed.available === true
     };
-
   } catch (error) {
     console.warn(
       'No se pudo leer state.json:',
@@ -315,262 +215,386 @@ function loadState() {
   }
 }
 
-
-function saveState(
-  available
-) {
+function saveState(available) {
   const newState = {
-    configKey:
-      getConfigurationKey(),
-
-    available:
-      available === true
+    configKey: configurationKey(),
+    available: available === true,
+    lastCheck: new Date().toISOString()
   };
-
-  const previousState =
-    loadState();
-
-  if (
-    previousState.configKey ===
-      newState.configKey &&
-    previousState.available ===
-      newState.available
-  ) {
-    return false;
-  }
 
   fs.writeFileSync(
     CONFIG.stateFile,
-    JSON.stringify(
-      newState,
-      null,
-      2
-    ) + '\n',
+    JSON.stringify(newState, null, 2) + '\n',
     'utf8'
   );
-
-  return true;
 }
 
+async function sendTelegram(text) {
+  const token = process.env.BOT_TOKEN;
+  const chatId = process.env.CHAT_ID;
 
-/* ============================================================
- * TELEGRAM
- * ============================================================
- */
-
-async function sendTelegram(
-  text
-) {
-  const token =
-    process.env.BOT_TOKEN;
-
-  const chatId =
-    process.env.CHAT_ID;
-
-  if (
-    !token ||
-    !chatId
-  ) {
+  if (!token || !chatId) {
     throw new Error(
       'No se encontraron BOT_TOKEN o CHAT_ID.'
     );
   }
 
-  const url =
-    `https://api.telegram.org/bot${token}/sendMessage`;
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    {
+      method: 'POST',
 
-  const response =
-    await fetch(
-      url,
-      {
-        method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
 
-        headers: {
-          'Content-Type':
-            'application/json'
-        },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: false
+      })
+    }
+  );
 
-        body:
-          JSON.stringify({
-            chat_id:
-              chatId,
+  const responseText = await response.text();
 
-            text,
-
-            disable_web_page_preview:
-              false
-          })
-      }
-    );
-
-  const responseText =
-    await response.text();
-
-  if (
-    !response.ok
-  ) {
+  if (!response.ok) {
     throw new Error(
-      'Telegram respondió con HTTP ' +
-      response.status +
-      ': ' +
-      responseText
+      `Telegram respondió HTTP ${response.status}: ${responseText}`
     );
   }
 
-  const result =
-    JSON.parse(
-      responseText
-    );
+  const result = JSON.parse(responseText);
 
-  if (
-    !result.ok
-  ) {
+  if (!result.ok) {
     throw new Error(
-      'Telegram rechazó el mensaje: ' +
-      responseText
+      `Telegram rechazó el mensaje: ${responseText}`
     );
   }
 }
 
+async function waitForPageReady(page) {
+  await page
+    .getByText(
+      'Adquiere tu boleto',
+      { exact: false }
+    )
+    .waitFor({
+      state: 'visible',
+      timeout: 60000
+    });
 
-/* ============================================================
- * SELECCIÓN DE CIRCUITO Y RUTA
- * ============================================================
- */
+  await page.waitForFunction(
+    () => {
+      const visibleSelects = Array
+        .from(document.querySelectorAll('mat-select'))
+        .filter(element => {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== 'hidden' &&
+            style.display !== 'none'
+          );
+        });
+
+      return visibleSelects.length >= 2;
+    },
+    null,
+    { timeout: 60000 }
+  );
+}
+
+async function findFormField(page, keyword) {
+  const fields = page.locator('mat-form-field');
+  const count = await fields.count();
+
+  const normalizedKeyword =
+    normalizeText(keyword).toLowerCase();
+
+  for (let index = 0; index < count; index++) {
+    const field = fields.nth(index);
+
+    if (!(await field.isVisible().catch(() => false))) {
+      continue;
+    }
+
+    const text = normalizeText(
+      await field.innerText().catch(() => '')
+    ).toLowerCase();
+
+    if (text.includes(normalizedKeyword)) {
+      return field;
+    }
+  }
+
+  throw new Error(
+    `No se encontró el campo correspondiente a: ${keyword}`
+  );
+}
+
+async function waitForSelectEnabled(select) {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const ariaDisabled =
+      await select.getAttribute('aria-disabled');
+
+    const disabled =
+      await select.getAttribute('disabled');
+
+    if (
+      ariaDisabled !== 'true' &&
+      disabled === null
+    ) {
+      return;
+    }
+
+    await select.page().waitForTimeout(500);
+  }
+
+  throw new Error(
+    'El selector continuó deshabilitado.'
+  );
+}
+
+async function waitForVisibleOptions(page) {
+  await page.waitForFunction(
+    () => {
+      const options = Array.from(
+        document.querySelectorAll(
+          '[role="option"], mat-option'
+        )
+      );
+
+      return options.some(element => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== 'hidden' &&
+          style.display !== 'none'
+        );
+      });
+    },
+    null,
+    { timeout: 30000 }
+  );
+}
+
+async function getVisibleOptions(page) {
+  const candidates = page.locator(
+    '[role="option"], mat-option'
+  );
+
+  const count = await candidates.count();
+  const visible = [];
+
+  for (let index = 0; index < count; index++) {
+    const candidate = candidates.nth(index);
+
+    if (await candidate.isVisible().catch(() => false)) {
+      visible.push(candidate);
+    }
+  }
+
+  return visible;
+}
 
 async function selectMatOption(
   page,
-  selectIndex,
-  optionText
+  fieldKeyword,
+  optionText,
+  diagnosticName
 ) {
-  const select =
-    page
-      .locator('mat-select')
-      .nth(selectIndex);
+  const field = await findFormField(
+    page,
+    fieldKeyword
+  );
+
+  const select = field
+    .locator('mat-select')
+    .first();
 
   await select.waitFor({
-    state: 'visible',
-    timeout: 45000
-  });
-
-  await select.click();
-
-  const option =
-    page
-      .locator(
-        'mat-option:visible'
-      )
-      .filter({
-        hasText:
-          optionText
-      })
-      .first();
-
-  await option.waitFor({
     state: 'visible',
     timeout: 30000
   });
 
-  const completeText =
-    normalizeText(
-      await option.innerText()
+  await waitForSelectEnabled(select);
+
+  await select.scrollIntoViewIfNeeded();
+  await select.click({ force: true });
+
+  await waitForVisibleOptions(page);
+
+  const options = await getVisibleOptions(page);
+
+  const optionDescriptions = [];
+
+  for (const option of options) {
+    optionDescriptions.push(
+      normalizeText(
+        await option.innerText().catch(() => '')
+      )
     );
+  }
+
+  console.log(
+    `Opciones encontradas para ${fieldKeyword}:`,
+    optionDescriptions
+  );
+
+  const normalizedTarget =
+    normalizeText(optionText).toLowerCase();
+
+  let selectedOption = null;
+
+  for (const option of options) {
+    const optionValue = normalizeText(
+      await option.innerText().catch(() => '')
+    ).toLowerCase();
+
+    if (optionValue.includes(normalizedTarget)) {
+      selectedOption = option;
+      break;
+    }
+  }
+
+  if (!selectedOption) {
+    await saveDiagnostic(
+      page,
+      `${diagnosticName}-opcion-no-encontrada`
+    );
+
+    throw new Error(
+      `No se encontró "${optionText}". Opciones visibles: ` +
+      optionDescriptions.join(' | ')
+    );
+  }
 
   console.log(
     'Seleccionando:',
-    completeText
+    normalizeText(await selectedOption.innerText())
   );
 
-  await option.click();
+  await selectedOption.click({ force: true });
+  await page.waitForTimeout(1000);
+
+  await saveDiagnostic(page, diagnosticName);
 }
 
+function parseCalendarMonth(label) {
+  const cleanLabel = normalizeText(label)
+    .toUpperCase()
+    .replace(/\./g, '');
 
-/* ============================================================
- * NAVEGACIÓN DEL CALENDARIO
- * ============================================================
- */
+  const parts = cleanLabel.split(' ');
+
+  if (parts.length < 2) {
+    return null;
+  }
+
+  const month = MONTHS[parts[0]];
+
+  const year = Number.parseInt(
+    parts[parts.length - 1],
+    10
+  );
+
+  if (
+    month === undefined ||
+    !Number.isInteger(year)
+  ) {
+    return null;
+  }
+
+  return { month, year };
+}
 
 async function navigateCalendarToTargetMonth(
   page,
   targetDate
 ) {
-  const targetYear =
-    targetDate.getUTCFullYear();
+  const targetYear = targetDate.getUTCFullYear();
+  const targetMonth = targetDate.getUTCMonth();
 
-  const targetMonth =
-    targetDate.getUTCMonth();
-
-  const periodButton =
-    page.locator(
-      '.mat-calendar-period-button'
-    );
+  const periodButton = page.locator(
+    '.mat-calendar-period-button:visible'
+  );
 
   await periodButton.waitFor({
     state: 'visible',
     timeout: 30000
   });
 
-  /*
-   * Límite de 60 movimientos para evitar
-   * un bucle infinito.
-   */
-  for (
-    let attempt = 0;
-    attempt < 60;
-    attempt++
-  ) {
-    const label =
-      await periodButton.innerText();
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const label = await periodButton.innerText();
+    const current = parseCalendarMonth(label);
 
-    const current =
-      parseCalendarMonth(
-        label
-      );
-
-    if (
-      !current
-    ) {
+    if (!current) {
       throw new Error(
-        'No se pudo interpretar el mes del calendario: ' +
-        label
+        `No se pudo interpretar el mes visible: ${label}`
       );
     }
 
-    console.log(
-      'Mes visible:',
-      label
-    );
+    console.log('Mes visible:', label);
 
     const difference =
-      (
-        targetYear -
-        current.year
-      ) * 12 +
-      (
-        targetMonth -
-        current.month
-      );
+      (targetYear - current.year) * 12 +
+      (targetMonth - current.month);
 
-    if (
-      difference === 0
-    ) {
+    if (difference === 0) {
+      await page.waitForTimeout(1200);
       return;
     }
 
-    const navigationButton =
+    const button =
       difference > 0
         ? page.locator(
-          '.mat-calendar-next-button'
-        )
+            '.mat-calendar-next-button:visible'
+          )
         : page.locator(
-          '.mat-calendar-previous-button'
+            '.mat-calendar-previous-button:visible'
+          );
+
+    const previousLabel = normalizeText(label);
+
+    const responsePromise = page
+      .waitForResponse(
+        response =>
+          response
+            .url()
+            .includes(
+              '/visita/consulta-fechas-disponibles'
+            ) &&
+          response.request().method() === 'POST',
+        { timeout: 30000 }
+      )
+      .catch(() => null);
+
+    await button.click({ force: true });
+    await responsePromise;
+
+    await page.waitForFunction(
+      oldLabel => {
+        const buttonElement = document.querySelector(
+          '.mat-calendar-period-button'
         );
 
-    await navigationButton.click();
+        return (
+          buttonElement &&
+          buttonElement.textContent &&
+          buttonElement.textContent.trim() !== oldLabel
+        );
+      },
+      previousLabel,
+      { timeout: 10000 }
+    ).catch(() => {});
 
-    await page.waitForTimeout(
-      350
-    );
+    await page.waitForTimeout(700);
   }
 
   throw new Error(
@@ -578,116 +602,109 @@ async function navigateCalendarToTargetMonth(
   );
 }
 
+async function openTargetCalendar(page) {
+  const dateField = await findFormField(
+    page,
+    'fecha'
+  );
 
-/**
- * Devuelve true cuando la fecha está habilitada.
- */
+  const input = dateField
+    .locator('input')
+    .first();
+
+  await input.waitFor({
+    state: 'visible',
+    timeout: 30000
+  });
+
+  const calendar = page.locator(
+    'mat-calendar:visible'
+  );
+
+  if (!(await calendar.isVisible().catch(() => false))) {
+    await input.click({ force: true });
+  }
+
+  await calendar.waitFor({
+    state: 'visible',
+    timeout: 30000
+  });
+
+  return calendar;
+}
+
 async function selectTargetDay(
   page,
   targetDate
 ) {
-  const targetDay =
-    targetDate.getUTCDate();
+  const targetDay = targetDate.getUTCDate();
+  const targetMonth = targetDate.getUTCMonth();
+  const targetYear = targetDate.getUTCFullYear();
 
-  const targetYear =
-    targetDate.getUTCFullYear();
+  const monthName =
+    SPANISH_MONTHS[targetMonth];
 
-  const candidates =
-    page
-      .locator(
-        'button.mat-calendar-body-cell'
-      )
-      .filter({
-        hasText:
-          new RegExp(
-            '^\\s*' +
-            targetDay +
-            '\\s*$'
-          )
-      });
+  const candidates = page.locator(
+    'mat-calendar:visible button.mat-calendar-body-cell'
+  );
 
-  const count =
-    await candidates.count();
+  const count = await candidates.count();
 
-  if (
-    count === 0
-  ) {
-    throw new Error(
-      'No se encontró el día ' +
-      targetDay +
-      ' en el calendario.'
+  let fallback = null;
+
+  for (let index = 0; index < count; index++) {
+    const candidate = candidates.nth(index);
+
+    const text = normalizeText(
+      await candidate.innerText().catch(() => '')
     );
-  }
 
-  let selectedCell =
-    candidates.first();
+    if (text !== String(targetDay)) {
+      continue;
+    }
 
-  /*
-   * Si existe más de una coincidencia,
-   * priorizamos la que tenga el año objetivo
-   * en su etiqueta accesible.
-   */
-  for (
-    let index = 0;
-    index < count;
-    index++
-  ) {
-    const candidate =
-      candidates.nth(index);
+    if (!fallback) {
+      fallback = candidate;
+    }
 
-    const ariaLabel =
-      normalizeText(
-        await candidate.getAttribute(
-          'aria-label'
-        )
-      );
+    const ariaLabel = normalizeText(
+      await candidate.getAttribute('aria-label')
+    ).toLowerCase();
 
     if (
-      ariaLabel.includes(
-        String(targetYear)
-      )
+      ariaLabel.includes(String(targetYear)) &&
+      ariaLabel.includes(monthName)
     ) {
-      selectedCell =
-        candidate;
-
+      fallback = candidate;
       break;
     }
   }
 
-  const ariaDisabled =
-    await selectedCell.getAttribute(
-      'aria-disabled'
+  if (!fallback) {
+    throw new Error(
+      `No se encontró el día ${targetDay} en el calendario.`
     );
+  }
 
-  const className =
-    String(
-      await selectedCell.getAttribute(
-        'class'
-      ) || ''
-    );
+  const ariaDisabled =
+    await fallback.getAttribute('aria-disabled');
 
   const disabledAttribute =
-    await selectedCell.getAttribute(
-      'disabled'
-    );
+    await fallback.getAttribute('disabled');
 
-  const isDisabled =
+  const className = String(
+    (await fallback.getAttribute('class')) || ''
+  );
+
+  const disabled =
     ariaDisabled === 'true' ||
     disabledAttribute !== null ||
-    className.includes(
-      'mat-calendar-body-disabled'
-    ) ||
-    await selectedCell
-      .isDisabled()
-      .catch(
-        () => false
-      );
+    className.includes('mat-calendar-body-disabled') ||
+    (await fallback.isDisabled().catch(() => false));
 
-  if (
-    isDisabled
-  ) {
+  if (disabled) {
     console.log(
-      'La fecha está deshabilitada.'
+      'La fecha está deshabilitada y no tiene disponibilidad.'
     );
 
     return false;
@@ -697,490 +714,291 @@ async function selectTargetDay(
     'La fecha está habilitada.'
   );
 
-  await selectedCell.click();
+  await fallback.click({ force: true });
+  await page.waitForTimeout(1500);
 
   return true;
 }
 
+async function readAvailableSlots(page) {
+  let scheduleField;
 
-/* ============================================================
- * CONSULTA DE HORARIOS Y CUPOS
- * ============================================================
- */
-
-async function readAvailableSlots(
-  page
-) {
-  /*
-   * Después de escoger la fecha aparece:
-   * 0: circuito
-   * 1: ruta
-   * 2: horario
-   */
-  const scheduleSelect =
-    page
-      .locator('mat-select')
-      .nth(2);
-
-  await scheduleSelect.waitFor({
-    state: 'visible',
-    timeout: 30000
-  });
-
-  await scheduleSelect.click();
-
-  const options =
-    page.locator(
-      'mat-option:visible'
+  try {
+    scheduleField = await findFormField(
+      page,
+      'horario'
+    );
+  } catch {
+    console.log(
+      'No apareció el campo de horarios.'
     );
 
-  await options.first().waitFor({
+    return [];
+  }
+
+  const select = scheduleField
+    .locator('mat-select')
+    .first();
+
+  await select.waitFor({
     state: 'visible',
     timeout: 30000
   });
 
-  const optionCount =
-    await options.count();
+  await waitForSelectEnabled(select);
+  await select.click({ force: true });
 
+  await waitForVisibleOptions(page);
+
+  const options = await getVisibleOptions(page);
   const slots = [];
 
-  for (
-    let index = 0;
-    index < optionCount;
-    index++
-  ) {
-    const option =
-      options.nth(index);
-
-    const text =
-      normalizeText(
-        await option.innerText()
-      );
+  for (const option of options) {
+    const text = normalizeText(
+      await option.innerText().catch(() => '')
+    );
 
     const ariaDisabled =
-      await option.getAttribute(
-        'aria-disabled'
-      );
+      await option.getAttribute('aria-disabled');
 
-    const className =
-      String(
-        await option.getAttribute(
-          'class'
-        ) || ''
-      );
+    const className = String(
+      (await option.getAttribute('class')) || ''
+    );
 
-    const isDisabled =
+    const disabled =
       ariaDisabled === 'true' ||
-      className.includes(
-        'mat-mdc-option-disabled'
-      ) ||
-      className.includes(
-        'mat-option-disabled'
-      );
+      className.includes('option-disabled');
 
-    const timeMatch =
-      text.match(
-        /(\d{1,2}:\d{2})/
-      );
+    const timeMatch = text.match(
+      /(\d{1,2}:\d{2})/
+    );
 
-    const seatsMatch =
-      text.match(
-        /(\d+)\s+boletos?/i
-      );
+    const seatsMatch = text.match(
+      /(\d+)\s+(?:boletos?|entradas?|cupos?)/i
+    );
 
-    if (
-      !timeMatch ||
-      !seatsMatch
-    ) {
-      console.log(
-        'Opción no interpretada:',
-        text
-      );
+    console.log('Horario observado:', text);
 
+    if (!timeMatch || !seatsMatch) {
       continue;
     }
 
-    const seats =
-      Number.parseInt(
-        seatsMatch[1],
-        10
-      );
-
     slots.push({
-      time:
-        timeMatch[1],
-
-      seats,
-
-      disabled:
-        isDisabled,
-
+      time: timeMatch[1],
+      seats: Number.parseInt(seatsMatch[1], 10),
+      disabled,
       text
     });
   }
 
-  /*
-   * Cierra el panel de opciones sin elegir un horario.
-   */
-  await page.keyboard.press(
-    'Escape'
-  );
+  await page.keyboard.press('Escape');
 
   return slots;
 }
 
+async function checkAvailability(page) {
+  console.log('Abriendo:', CONFIG.siteUrl);
 
-/* ============================================================
- * REVISIÓN DE TU BOLETO
- * ============================================================
- */
+  await page.goto(CONFIG.siteUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000
+  });
 
-async function checkAvailability(
-  page
-) {
-  console.log(
-    'Abriendo:',
-    CONFIG.siteUrl
-  );
-
-  await page.goto(
-    CONFIG.siteUrl,
-    {
-      waitUntil:
-        'domcontentloaded',
-
-      timeout:
-        60000
-    }
-  );
-
-  await page
-    .getByText(
-      'Adquiere tu boleto',
-      {
-        exact: false
-      }
-    )
-    .waitFor({
-      state: 'visible',
-      timeout: 60000
-    });
+  await waitForPageReady(page);
+  await saveDiagnostic(page, '01-pagina-cargada');
 
   await selectMatOption(
     page,
-    0,
-    CONFIG.circuitText
-  );
-
-  await page.waitForTimeout(
-    800
+    'circuito',
+    CONFIG.circuitText,
+    '02-circuito-seleccionado'
   );
 
   await selectMatOption(
     page,
-    1,
-    CONFIG.routeText
+    'ruta',
+    CONFIG.routeText,
+    '03-ruta-seleccionada'
   );
 
-  await page.waitForTimeout(
-    1200
+  await openTargetCalendar(page);
+
+  const targetDate = parseISODate(
+    CONFIG.targetDate
   );
-
-  const dateInput =
-    page
-      .locator(
-        'input[matinput][readonly]'
-      )
-      .first();
-
-  await dateInput.waitFor({
-    state: 'visible',
-    timeout: 30000
-  });
-
-  /*
-   * La página suele abrir el calendario
-   * automáticamente. Si no está abierto,
-   * hacemos clic en el campo de fecha.
-   */
-  const calendar =
-    page.locator(
-      'mat-calendar'
-    );
-
-  if (
-    !await calendar
-      .isVisible()
-      .catch(
-        () => false
-      )
-  ) {
-    await dateInput.click();
-  }
-
-  await calendar.waitFor({
-    state: 'visible',
-    timeout: 30000
-  });
-
-  const targetDate =
-    parseISODate(
-      CONFIG.targetDate
-    );
 
   await navigateCalendarToTargetMonth(
     page,
     targetDate
   );
 
-  const dateEnabled =
-    await selectTargetDay(
-      page,
-      targetDate
-    );
+  await saveDiagnostic(
+    page,
+    '04-mes-objetivo'
+  );
 
-  if (
-    !dateEnabled
-  ) {
+  const dateEnabled = await selectTargetDay(
+    page,
+    targetDate
+  );
+
+  if (!dateEnabled) {
     return {
-      dateEnabled:
-        false,
-
-      slots:
-        [],
-
-      matchingSlots:
-        []
+      dateEnabled: false,
+      slots: [],
+      matchingSlots: []
     };
   }
 
-  await page.waitForTimeout(
-    1500
+  await saveDiagnostic(
+    page,
+    '05-fecha-seleccionada'
   );
 
-  const slots =
-    await readAvailableSlots(
-      page
-    );
+  const slots = await readAvailableSlots(page);
 
-  const matchingSlots =
-    slots.filter(
-      slot =>
-        !slot.disabled &&
-        slot.seats >=
-          CONFIG.requiredTickets
-    );
+  await saveDiagnostic(
+    page,
+    '06-horarios'
+  );
+
+  const matchingSlots = slots.filter(
+    slot =>
+      !slot.disabled &&
+      slot.seats >= CONFIG.requiredTickets
+  );
 
   return {
-    dateEnabled:
-      true,
-
+    dateEnabled: true,
     slots,
-
     matchingSlots
   };
 }
 
-
-/* ============================================================
- * MENSAJES
- * ============================================================
- */
-
-function buildAvailabilityMessage(
-  matchingSlots
-) {
-  const slotsText =
-    matchingSlots
-      .map(
-        slot =>
-          '• ' +
-          slot.time +
-          ' — ' +
-          slot.seats +
-          (
-            slot.seats === 1
-              ? ' cupo'
-              : ' cupos'
-          )
-      )
-      .join('\n');
+function buildAvailabilityMessage(matchingSlots) {
+  const slotsText = matchingSlots
+    .map(
+      slot =>
+        `• ${slot.time} — ${slot.seats} ` +
+        (slot.seats === 1 ? 'cupo' : 'cupos')
+    )
+    .join('\n');
 
   return (
     '🚨 ENTRADAS DISPONIBLES — MACHU PICCHU\n\n' +
-    'Ruta: ' +
-    CONFIG.routeText +
-    ' — ' +
-    CONFIG.routeName +
-    '\n' +
-    'Fecha: ' +
-    formatDatePE(
-      CONFIG.targetDate
-    ) +
-    '\n' +
-    'Cantidad requerida: ' +
-    CONFIG.requiredTickets +
-    '\n\n' +
-    'Horarios encontrados:\n' +
-    slotsText +
-    '\n\n' +
-    'Compra inmediatamente en:\n' +
-    CONFIG.siteUrl +
-    '\n\n' +
-    'Detectado: ' +
-    getLimaTimestamp()
+    `Ruta: ${CONFIG.routeText} — ${CONFIG.routeName}\n` +
+    `Fecha: ${formatDatePE(CONFIG.targetDate)}\n` +
+    `Cantidad requerida: ${CONFIG.requiredTickets}\n\n` +
+    `Horarios encontrados:\n${slotsText}\n\n` +
+    `Comprar ahora:\n${CONFIG.siteUrl}\n\n` +
+    `Detectado: ${getLimaTimestamp()}`
   );
 }
 
-
-function buildNoAvailabilityMessage(
-  result
-) {
+function buildNoAvailabilityMessage(result) {
   let detail;
 
-  if (
-    !result.dateEnabled
-  ) {
+  if (!result.dateEnabled) {
     detail =
       'La fecha continúa deshabilitada en el calendario.';
-
-  } else if (
-    result.slots.length === 0
-  ) {
+  } else if (result.slots.length === 0) {
     detail =
-      'La fecha estaba habilitada, pero no se encontraron horarios legibles.';
-
+      'La fecha estaba habilitada, pero no se encontraron horarios disponibles.';
   } else {
-    const slotsText =
-      result.slots
-        .map(
-          slot =>
-            slot.time +
-            ': ' +
-            slot.seats +
-            (
-              slot.seats === 1
-                ? ' cupo'
-                : ' cupos'
-            )
-        )
-        .join(', ');
+    const slotsText = result.slots
+      .map(
+        slot =>
+          `${slot.time}: ${slot.seats} ` +
+          (slot.seats === 1 ? 'cupo' : 'cupos')
+      )
+      .join(', ');
 
     detail =
-      'No existe un horario con al menos ' +
-      CONFIG.requiredTickets +
-      ' cupos. Horarios observados: ' +
-      slotsText +
-      '.';
+      `No existe un horario con al menos ` +
+      `${CONFIG.requiredTickets} cupos. ` +
+      `Horarios observados: ${slotsText}.`;
   }
 
   return (
     '🔎 REVISIÓN MANUAL COMPLETADA\n\n' +
-    'Ruta: ' +
-    CONFIG.routeText +
-    '\n' +
-    'Fecha: ' +
-    formatDatePE(
-      CONFIG.targetDate
-    ) +
-    '\n' +
-    'Cantidad requerida: ' +
-    CONFIG.requiredTickets +
-    '\n\n' +
-    detail +
-    '\n\n' +
-    'Revisado: ' +
-    getLimaTimestamp()
+    `Ruta: ${CONFIG.routeText}\n` +
+    `Fecha: ${formatDatePE(CONFIG.targetDate)}\n` +
+    `Cantidad requerida: ${CONFIG.requiredTickets}\n\n` +
+    `${detail}\n\n` +
+    `Revisado: ${getLimaTimestamp()}`
   );
 }
 
-
-/* ============================================================
- * EJECUCIÓN PRINCIPAL
- * ============================================================
- */
-
 async function main() {
   validateConfiguration();
+  ensureDiagnosticDirectory();
 
-  const browser =
-    await chromium.launch({
-      headless: true
-    });
+  const browser = await chromium.launch({
+    headless: true
+  });
 
-  const context =
-    await browser.newContext({
-      locale:
-        'es-PE',
+  const context = await browser.newContext({
+    locale: 'es-PE',
+    timezoneId: 'America/Lima',
 
-      timezoneId:
-        'America/Lima',
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/149.0.0.0 Safari/537.36',
 
-      viewport: {
-        width: 1440,
-        height: 1000
-      }
-    });
+    viewport: {
+      width: 1440,
+      height: 1100
+    },
 
-  const page =
-    await context.newPage();
-
-  page.setDefaultTimeout(
-    30000
-  );
-
-  page.on(
-    'console',
-    message => {
-      if (
-        message.type() === 'error'
-      ) {
-        console.log(
-          'Error de la página:',
-          message.text()
-        );
-      }
+    extraHTTPHeaders: {
+      'Accept-Language':
+        'es-PE,es;q=0.9,en;q=0.8'
     }
-  );
+  });
+
+  const page = await context.newPage();
+
+  page.setDefaultTimeout(30000);
+
+  page.on('requestfailed', request => {
+    console.warn(
+      'Solicitud fallida:',
+      request.url(),
+      request.failure()?.errorText || ''
+    );
+  });
+
+  page.on('response', response => {
+    if (response.status() >= 400) {
+      console.warn(
+        'Respuesta HTTP:',
+        response.status(),
+        response.url()
+      );
+    }
+  });
 
   try {
-    const previousState =
-      loadState();
-
-    const sameConfiguration =
-      previousState.configKey ===
-      getConfigurationKey();
+    const previousState = loadState();
 
     const wasAvailable =
-      sameConfiguration &&
+      previousState.configKey === configurationKey() &&
       previousState.available;
 
-    const result =
-      await checkAvailability(
-        page
-      );
+    const result = await checkAvailability(page);
+
+    console.log(
+      JSON.stringify(result, null, 2)
+    );
 
     const isAvailable =
       result.matchingSlots.length > 0;
 
-    console.log(
-      JSON.stringify(
-        result,
-        null,
-        2
-      )
-    );
+    saveState(isAvailable);
 
-    if (
-      isAvailable
-    ) {
-      /*
-       * Solo envía alerta cuando cambia
-       * de no disponible a disponible.
-       */
-      if (
-        !wasAvailable
-      ) {
+    if (isAvailable) {
+      if (!wasAvailable) {
         await sendTelegram(
           buildAvailabilityMessage(
             result.matchingSlots
@@ -1190,15 +1008,12 @@ async function main() {
         console.log(
           'Alerta de disponibilidad enviada.'
         );
-
       } else {
         console.log(
           'La disponibilidad continúa activa; no se repite la alerta.'
         );
 
-        if (
-          CONFIG.notifyStatus
-        ) {
+        if (CONFIG.notifyStatus) {
           await sendTelegram(
             '✅ REVISIÓN MANUAL\n\n' +
             'Las entradas continúan disponibles.\n\n' +
@@ -1209,36 +1024,18 @@ async function main() {
         }
       }
 
-      saveState(
-        true
-      );
-
       return;
     }
-
-    /*
-     * Cuando vuelve a agotarse, dejamos
-     * preparado el sistema para enviar una
-     * nueva alerta en la próxima liberación.
-     */
-    saveState(
-      false
-    );
 
     console.log(
       'No se encontraron cupos suficientes.'
     );
 
-    if (
-      CONFIG.notifyStatus
-    ) {
+    if (CONFIG.notifyStatus) {
       await sendTelegram(
-        buildNoAvailabilityMessage(
-          result
-        )
+        buildNoAvailabilityMessage(result)
       );
     }
-
   } catch (error) {
     console.error(
       error.stack ||
@@ -1246,50 +1043,28 @@ async function main() {
       String(error)
     );
 
-    await page
-      .screenshot({
-        path:
-          CONFIG.screenshotFile,
+    await saveDiagnostic(
+      page,
+      '99-error-final'
+    );
 
-        fullPage:
-          true
-      })
-      .catch(
-        screenshotError => {
-          console.error(
-            'No se pudo crear la captura:',
-            screenshotError.message
-          );
-        }
-      );
-
-    if (
-      CONFIG.notifyStatus
-    ) {
+    if (CONFIG.notifyStatus) {
       await sendTelegram(
         '❌ ERROR EN LA REVISIÓN MANUAL\n\n' +
-        (
-          error.message ||
-          String(error)
-        ) +
-        '\n\nHora: ' +
-        getLimaTimestamp()
-      ).catch(
-        telegramError => {
-          console.error(
-            'No se pudo enviar el error a Telegram:',
-            telegramError.message
-          );
-        }
-      );
+        `${error.message || String(error)}\n\n` +
+        `Hora: ${getLimaTimestamp()}`
+      ).catch(telegramError => {
+        console.error(
+          'No se pudo enviar el error a Telegram:',
+          telegramError.message
+        );
+      });
     }
 
     process.exitCode = 1;
-
   } finally {
     await browser.close();
   }
 }
-
 
 await main();
