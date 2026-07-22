@@ -1,5 +1,6 @@
 {
-  "configKey": "Circuito 2|Ruta 2-A|2026-08-13|4",
-  "available": false,
-  "lastCheck": "2026-07-22T18:37:03.792Z"
+  "targetDate": "2026-07-23",
+  "availableKeys": [],
+  "allRoutesFailed": true,
+  "lastCheck": "2026-07-22T19:45:05.184Z"
 }
