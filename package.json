@@ -1,0 +1,16 @@
+{
+  "name": "monitor-machu-picchu",
+  "version": "1.0.0",
+  "description": "Monitor automático de disponibilidad de entradas para Machu Picchu",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "monitor": "node monitor.js"
+  },
+  "dependencies": {
+    "playwright": "1.61.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
