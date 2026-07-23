@@ -1614,7 +1614,14 @@ function buildAvailabilityBody(
   );
 }
 
-function buildAvailabilityMessage(
+function buildAvailabilityMessage(alert, items) {
+  return (
+    '🚨 ENTRADAS DISPONIBLES — MACHU PICCHU\n\n' +
+    buildAvailabilityBody(alert, items) +
+    `\n\nCompra directamente en el portal oficial:\n${CONFIG.siteUrl}` +
+    `\n\nDetectado: ${getLimaTimestamp()}`
+  );
+}
   alert,
   items
 ) {
@@ -1629,7 +1636,49 @@ function buildAvailabilityMessage(
   );
 }
 
-function buildManualSummary(
+function buildManualSummary(alert, routeResults, availableItems) {
+  const processed = routeResults.filter(result => result.processed);
+  const errors = routeResults.filter(result => !result.processed);
+  const unavailableRoutes = routeResults.filter(
+    result => result.processed && !result.routeEnabled
+  );
+
+  const notes = [];
+
+  if (unavailableRoutes.length) {
+    notes.push(
+      'Rutas no habilitadas en el portal: ' +
+      unavailableRoutes.map(item => item.route.code).join(', ')
+    );
+  }
+
+  if (errors.length) {
+    notes.push(
+      'Rutas con error: ' +
+      errors.map(item => item.route.code).join(', ')
+    );
+  }
+
+  const resultText = availableItems.length
+    ? (
+      `Se encontraron cupos:\n\n${buildAvailabilityBody(alert, availableItems)}` +
+      `\n\nCompra directamente en el portal oficial:\n${CONFIG.siteUrl}`
+    )
+    : (
+      `No se encontraron rutas con al menos ` +
+      `${alert.requiredTickets} cupos disponibles.`
+    );
+
+  return (
+    '🔎 REVISIÓN MANUAL COMPLETADA\n\n' +
+    `Alerta: ${alert.id}\n` +
+    `Fecha vigilada: ${formatDatePE(alert.targetDate)}\n` +
+    `Rutas procesadas: ${processed.length} de ${alert.routes.length}\n\n` +
+    resultText +
+    (notes.length ? `\n\n${notes.join('\n')}` : '') +
+    `\n\nRevisado: ${getLimaTimestamp()}`
+  );
+}
   alert,
   routeResults,
   availableItems
