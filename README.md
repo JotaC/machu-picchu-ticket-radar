@@ -1,3 +1,8 @@
+# Machu Picchu Ticket Radar
+
+Monitor automático de disponibilidad de entradas para Machu Picchu con alertas por Telegram.
+
+Automatic Machu Picchu ticket availability monitor with Telegram notifications.
 # Instalación / Installation
 
 [Español](#instalación-en-español) | [English](#installation-in-english)
