@@ -1622,20 +1622,7 @@ function buildAvailabilityMessage(alert, items) {
     `\n\nDetectado: ${getLimaTimestamp()}`
   );
 }
-  alert,
-  items
-) {
-  return (
-    '🚨 ENTRADAS DISPONIBLES — MACHU PICCHU\n\n' +
-    buildAvailabilityBody(
-      alert,
-      items
-    ) +
-    `\n\nCompra inmediatamente en:\n${CONFIG.siteUrl}` +
-    `\n\nDetectado: ${getLimaTimestamp()}`
-  );
-}
-
+ 
 function buildManualSummary(alert, routeResults, availableItems) {
   const processed = routeResults.filter(result => result.processed);
   const errors = routeResults.filter(result => !result.processed);
